@@ -1,0 +1,22 @@
+# Runtime secrets & auth
+.app_token
+.roster_secret
+.sesskey
+
+# Databases
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+
+# Logs
+*.log
+
+# Python cache
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# Debug artifacts
+roster_debug.json
+output.txt
