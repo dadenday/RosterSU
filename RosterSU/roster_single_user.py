@@ -73,6 +73,57 @@ event = {
     "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
 }
 
+# === AUTO-DEPENDENCY INSTALLATION =====================
+# Automatically install missing dependencies on first run
+def _ensure_dependencies():
+    """Check and install missing dependencies automatically."""
+    missing = []
+    
+    # Check each required package
+    try:
+        import fasthtml
+    except ImportError:
+        missing.append("python-fasthtml")
+    
+    try:
+        import python_calamine
+    except ImportError:
+        missing.append("python-calamine")
+    
+    try:
+        import rapidfuzz
+    except ImportError:
+        missing.append("rapidfuzz")
+    
+    if missing:
+        print("=" * 60)
+        print("RosterSU - First Time Setup")
+        print("=" * 60)
+        print(f"\nMissing dependencies: {', '.join(missing)}")
+        print("\nInstalling required packages...")
+        print("(This may take a few minutes)\n")
+        
+        import subprocess
+        try:
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "--upgrade", "-r", 
+                 os.path.join(os.path.dirname(os.path.abspath(__file__)), "requirements.txt")],
+                stdout=sys.stdout,
+                stderr=sys.stderr,
+            )
+            print("\n✓ Dependencies installed successfully!")
+            print("Restarting import process...\n")
+        except subprocess.CalledProcessError as e:
+            print(f"\n✗ Failed to install dependencies: {e}", file=sys.stderr)
+            print("\nPlease install manually with:")
+            print("  pip install -r requirements.txt")
+            sys.exit(1)
+
+# Run dependency check before importing third-party packages
+_ensure_dependencies()
+del _ensure_dependencies  # Clean up after execution
+
+# === THIRD-PARTY IMPORTS ================================
 from fasthtml.common import *
 from starlette.responses import Response, FileResponse
 from python_calamine import CalamineWorkbook

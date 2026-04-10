@@ -1,0 +1,7 @@
+# RosterSU - Dependencies
+# Install with: pip install -r requirements.txt
+# Or run the app directly: python roster_single_user.py (auto-installs missing deps)
+
+python-fasthtml
+python-calamine
+rapidfuzz
