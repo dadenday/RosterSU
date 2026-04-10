@@ -5,6 +5,7 @@ Extracted from roster_single_user.py for maintainability.
 Provides SQLite persistence for roster data.
 """
 
+import os
 import sqlite3
 import json
 from contextlib import contextmanager
@@ -23,6 +24,37 @@ def _load_config():
         _DB_FILE = DB_FILE
         _DEFAULT_HISTORY_LIMIT = DEFAULT_HISTORY_LIMIT
         _config_loaded = True
+
+
+def get_db_path():
+    """Get the current database path, re-reading JSON config each call.
+
+    This allows db_path changes via the settings UI to take effect on next
+    DB access without requiring an app restart. Falls back to module-level
+    _DB_FILE if config is unavailable.
+    """
+    global _DB_FILE
+    try:
+        from config import (
+            DEFAULT_CONFIG, CONFIG_FILE, PROJECT_ROOT,
+            _load_merged_config,
+        )
+        merged = _load_merged_config()
+        db_path = merged.get("db_path", DEFAULT_CONFIG["db_path"])
+        db_path = db_path if os.path.isabs(db_path) else os.path.join(PROJECT_ROOT, db_path)
+        return os.path.expanduser(db_path)
+    except Exception:
+        return _DB_FILE
+
+
+def get_db():
+    """Get a database connection with WAL mode enabled."""
+    db_path = get_db_path()
+    conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute('PRAGMA journal_mode=WAL;')
+    return conn
+
 
 # Import state locks (lazy import)
 _state_loaded = False

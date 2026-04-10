@@ -2567,6 +2567,7 @@ def get_config():
             "port", "history_limit", "page_size", "port_wait_timeout",
             "ingest_interval", "max_upload_mb",
             "auto_ingest_dir", "export_dir", "processed_archive_dir",
+            "db_path",
             "static_html_scope", "static_html_count", "static_html_output_dir",
         ]:
             if op_key not in config:

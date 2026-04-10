@@ -24,7 +24,6 @@ import json
 # Calculate project root (one level up from RosterSU/ directory)
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-DB_FILE = os.path.join(PROJECT_ROOT, "roster_history.db")
 DEBUG_FILE = os.path.join(PROJECT_ROOT, "roster_debug.json")
 CONFIG_FILE = os.path.join(PROJECT_ROOT, "rosterSU_config.json")
 
@@ -47,6 +46,8 @@ DEFAULT_CONFIG = {
     "auto_ingest_dir": "~/storage/downloads/Zalo",
     "export_dir": "~/storage/downloads/Zalo",
     "processed_archive_dir": "processed_archive",
+    # Paths (user-overridable via JSON settings UI)
+    "db_path": "roster_history.db",
     # Static HTML Viewer
     "static_html_scope": "current_month",
     "static_html_count": 5,
@@ -88,6 +89,10 @@ INGEST_INTERVAL = int(_MERGED.get("ingest_interval", DEFAULT_CONFIG["ingest_inte
 MAX_UPLOAD_MB = int(_MERGED.get("max_upload_mb", DEFAULT_CONFIG["max_upload_mb"]))
 
 # Paths — relative dirs are resolved relative to the JSON-configured base
+_DB_PATH = _MERGED.get("db_path", DEFAULT_CONFIG["db_path"])
+DB_FILE = _DB_PATH if os.path.isabs(_DB_PATH) else os.path.join(PROJECT_ROOT, _DB_PATH)
+DB_FILE = os.path.expanduser(DB_FILE)
+
 _AUTO_INGEST_BASE = os.path.expanduser(_MERGED.get("auto_ingest_dir", DEFAULT_CONFIG["auto_ingest_dir"]))
 _EXPORT_BASE = os.path.expanduser(_MERGED.get("export_dir", DEFAULT_CONFIG["export_dir"]))
 

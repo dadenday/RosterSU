@@ -234,7 +234,9 @@ def post_scan():
 
 @rt("/settings", methods=["get", "post"])
 def settings_page(request: Request, aliases:str="", aircraft_airbus:str="", aircraft_boeing:str="", aircraft_other:str="",
-                  static_html_scope:str="", static_html_count:str=""):
+                  static_html_scope:str="", static_html_count:str="",
+                  db_path:str="", auto_ingest_dir:str="", export_dir:str="",
+                  static_html_output_dir:str="", processed_archive_dir:str=""):
     """Handle GET (render form) and POST (save settings) for /settings."""
     if request.method == "POST":
         # Save settings
@@ -245,6 +247,11 @@ def settings_page(request: Request, aliases:str="", aircraft_airbus:str="", airc
             "aircraft_other": aircraft_other,
             "static_html_scope": static_html_scope,
             "static_html_count": static_html_count,
+            "db_path": db_path,
+            "auto_ingest_dir": auto_ingest_dir,
+            "export_dir": export_dir,
+            "static_html_output_dir": static_html_output_dir,
+            "processed_archive_dir": processed_archive_dir,
         })
 
         config = get_config()
@@ -261,6 +268,18 @@ def settings_page(request: Request, aliases:str="", aircraft_airbus:str="", airc
             config["static_html_count"] = int(static_html_count) if static_html_count else 5
         except ValueError:
             config["static_html_count"] = 5
+
+        # Save path settings (only if user provided non-empty values)
+        if db_path:
+            config["db_path"] = db_path
+        if auto_ingest_dir:
+            config["auto_ingest_dir"] = auto_ingest_dir
+        if export_dir:
+            config["export_dir"] = export_dir
+        if static_html_output_dir:
+            config["static_html_output_dir"] = static_html_output_dir
+        if processed_archive_dir:
+            config["processed_archive_dir"] = processed_archive_dir
 
         log_debug("settings_saving", {
             "received_scope": static_html_scope,
@@ -280,11 +299,70 @@ def settings_page(request: Request, aliases:str="", aircraft_airbus:str="", airc
     config = get_config()
     aliases_val = ",".join(config.get("aliases", []))
     aircraft_config = config.get("aircraft", {})
-    
+
+    # Path defaults
+    db_path_val = config.get("db_path", "roster_history.db")
+    auto_ingest_val = config.get("auto_ingest_dir", "~/storage/downloads/Zalo")
+    export_val = config.get("export_dir", "~/storage/downloads/Zalo")
+    static_output_val = config.get("static_html_output_dir", "~/storage/downloads/Zalo/viewer")
+    processed_val = config.get("processed_archive_dir", "processed_archive")
+
     content = Div(
         Div(H4("⚙️ Cài đặt"), style="margin-bottom:0.75rem;"),
         # Unified settings form
         Form(
+            # Path configuration section
+            Div(
+                H5("📁 Đường dẫn"),
+                P("Tùy chỉnh đường dẫn cho database, thư mục ingest, xuất file. Dùng cho môi trường Termux.",
+                  style="font-size:0.8rem; color:var(--muted); margin-bottom:0.5rem;"),
+                # Database path
+                Div(
+                    Label("🗄️ Database path", style="font-weight:500; margin-bottom:0.2rem;"),
+                    Input(type="text", name="db_path", value=db_path_val,
+                          style="font-family:monospace; font-size:0.75rem; width:100%;"),
+                    P("Đường dẫn tới file SQLite. VD: ~/roster.db",
+                      style="font-size:0.7rem; color:var(--muted);"),
+                    cls="mb-2"
+                ),
+                # Auto ingest directory
+                Div(
+                    Label("📂 Thư mục auto-ingest (Zalo)", style="font-weight:500; margin-bottom:0.2rem;"),
+                    Input(type="text", name="auto_ingest_dir", value=auto_ingest_val,
+                          style="font-family:monospace; font-size:0.75rem; width:100%;"),
+                    P("Thư mục tải xuống Zalo để quét file tự động.",
+                      style="font-size:0.7rem; color:var(--muted);"),
+                    cls="mb-2"
+                ),
+                # Export directory
+                Div(
+                    Label("📤 Thư mục xuất file", style="font-weight:500; margin-bottom:0.2rem;"),
+                    Input(type="text", name="export_dir", value=export_val,
+                          style="font-family:monospace; font-size:0.75rem; width:100%;"),
+                    P("Nơi lưu file iCal/CSV xuất ra.",
+                      style="font-size:0.7rem; color:var(--muted);"),
+                    cls="mb-2"
+                ),
+                # Static HTML output directory
+                Div(
+                    Label("📖 Thư mục HTML tĩnh", style="font-weight:500; margin-bottom:0.2rem;"),
+                    Input(type="text", name="static_html_output_dir", value=static_output_val,
+                          style="font-family:monospace; font-size:0.75rem; width:100%;"),
+                    P("Nơi lưu file schedule.html để xem nhanh.",
+                      style="font-size:0.7rem; color:var(--muted);"),
+                    cls="mb-2"
+                ),
+                # Processed archive directory
+                Div(
+                    Label("📦 Thư mục lưu file đã xử lý", style="font-weight:500; margin-bottom:0.2rem;"),
+                    Input(type="text", name="processed_archive_dir", value=processed_val,
+                          style="font-family:monospace; font-size:0.75rem; width:100%;"),
+                    P("Thư mục con lưu file roster đã ingest (trong thư mục auto-ingest).",
+                      style="font-size:0.7rem; color:var(--muted);"),
+                    cls="mb-2"
+                ),
+                cls="card mb-3"
+            ),
             # Aliases section
             Div(
                 Label("🏷️ Biệt danh", style="font-weight:500; margin-bottom:0.3rem;"),
