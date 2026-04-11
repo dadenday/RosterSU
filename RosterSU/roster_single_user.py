@@ -166,6 +166,7 @@ from config import (
     DEBUG_FILE,
     CONFIG_FILE,
     DEFAULT_CONFIG,
+    _load_merged_config,
     AUTO_INGEST_DIR,
     EXPORT_DIR,
     PROCESSED_ARCHIVE_DIR,
@@ -3306,6 +3307,40 @@ if __name__ in {"__main__", "builtins"}:
     debug_log("Application starting", "MAIN")
     debug_log(f"Debug mode is {'enabled' if DEBUG_ENABLED else 'disabled'}", "MAIN")
     init_db()
+
+    # --- Flight Delay Auto-Sync ---
+    def _run_flight_startup_sync():
+        """Run flight sync at startup if enabled. Non-blocking, logs results."""
+        try:
+            merged = _load_merged_config()
+            if not merged.get("enable_flight_sync", False):
+                debug_log("Flight sync: disabled in config, skipping")
+                return
+
+            from scraper import AutoSyncService
+            from database import get_db
+
+            today_iso = datetime.now().strftime("%Y-%m-%d")
+            today_db = datetime.now().strftime("%d.%m.%y")
+
+            conn = get_db()
+            try:
+                service = AutoSyncService()
+                sync_result = service.run_sync(conn, today_iso, today_db)
+                for detail in sync_result.details:
+                    debug_log(f"Flight sync: {detail}")
+            finally:
+                conn.close()
+
+            # Bump revision to trigger UI refresh
+            from state import bump_db_rev
+            bump_db_rev()
+        except Exception as e:
+            debug_log(f"Flight sync startup error: {e}")
+            # Do NOT crash -- app continues without sync
+
+    _run_flight_startup_sync()
+
     os.makedirs(PROCESSED_ARCHIVE_DIR, exist_ok=True)
     threading.Thread(target=run_auto_ingest, daemon=True).start()
     threading.Thread(target=auto_open_launcher, daemon=True).start()
