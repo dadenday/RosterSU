@@ -23,6 +23,7 @@ from roster_single_user import (
     consolidate_file_results,
     save_entries_bulk,
     log_debug,
+    _run_ingest_once,
 )
 from config import (
     DB_FILE,
