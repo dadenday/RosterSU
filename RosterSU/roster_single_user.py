@@ -3230,6 +3230,103 @@ select { padding: 0.4rem 0.6rem; cursor: pointer; }
 
 /* === Utility: Hidden form === */
 .hidden-form { display: none; }
+
+/* === API Preview Card === */
+.api-preview-card {
+    background: #0f172a;
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
+    margin-bottom: var(--space-3);
+    box-shadow: var(--shadow-md);
+    border: 1px solid rgba(71,85,105,0.4);
+}
+
+.api-preview-card table {
+    width: 100%;
+    font-size: 0.75rem;
+    font-weight: 700;
+    border-collapse: collapse;
+}
+
+.api-preview-card td {
+    padding: 0.25rem 0.4rem;
+    border-bottom: 1px solid rgba(148,163,184,0.1);
+    vertical-align: middle;
+    white-space: nowrap;
+    text-align: center;
+    font-weight: 700;
+}
+
+/* Bigger border between flights - add border after every 2nd row (each flight) */
+.api-preview-card tbody tr:nth-child(2n) td {
+    border-bottom: 3px solid rgba(148,163,184,0.3);
+    padding-bottom: 0.5rem;
+}
+
+/* Row above (Call, Open, Names, Type) - Red */
+.api-preview-card tbody tr:nth-child(odd) td {
+    color: #ef4444;
+}
+
+/* Row below (Route, Close, CkRow, Bay) - Blue */
+.api-preview-card tbody tr:nth-child(even) td {
+    color: #3b82f6;
+}
+
+/* Status cell - Green, centered */
+.api-preview-card td[rowspan="2"] {
+    font-weight: 700;
+    text-align: center;
+    color: #22c55e;
+    background: rgba(34,197,94,0.08);
+}
+
+/* Dark theme overrides */
+[data-theme='dark'] .api-preview-card {
+    background: #0f172a;
+    border-color: rgba(71,85,105,0.5);
+}
+
+/* Empty state text */
+.api-preview-card p {
+    font-size: 0.8rem;
+    color: #94a3b8;
+    margin-bottom: 0.5rem;
+}
+
+/* === API Preview Card Multi-Day === */
+.api-preview-card .date-section {
+    margin-bottom: var(--space-4);
+    padding-bottom: var(--space-4);
+    border-bottom: 2px solid rgba(148,163,184,0.2);
+}
+
+.api-preview-card .date-section:last-child {
+    margin-bottom: 0;
+    padding-bottom: 0;
+    border-bottom: none;
+}
+
+/* Date header styling */
+.api-preview-card .date-section > p:first-child {
+    font-weight: 700;
+    font-size: 0.85rem;
+    margin-bottom: 0.3rem;
+    color: #e2e8f0;
+}
+
+/* Error state styling */
+.api-preview-card .date-section p[style*="ef4444"] {
+    color: #ef4444 !important;
+    font-size: 0.8rem;
+    font-weight: 700;
+}
+
+/* Warning state styling (No DB schedule) */
+.api-preview-card .date-section p[style*="f59e0b"] {
+    color: #f59e0b !important;
+    font-weight: 700;
+}
 """
 
 hdrs = (
