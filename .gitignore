@@ -8,6 +8,7 @@
 *.db-wal
 *.db-shm
 *.db-journal
+roster_history.db.bak
 
 # Logs
 *.log
@@ -20,3 +21,36 @@ __pycache__/
 # Debug artifacts
 roster_debug.json
 output.txt
+
+# User config (contains personal data)
+rosterSU_config.json
+
+# Generated output
+schedule.html
+schedule_meta.json
+flight_data.json
+
+# Backup/temp files
+*.bak
+bak_*.txt
+current_*.txt
+*_v2.txt
+.zsh_history
+
+# Old version copies
+RosterSU_*/
+
+# Test files
+test_*.py
+test_*.json
+
+# Audit/reports/docs (not source code)
+RosterSU/audit_*
+RosterSU/Gpt_*
+RosterSU/Grok_*
+RosterSU/MAP.md
+RosterSU/tech_debt.md
+RosterSU/test_*
+
+# Termux test screenshots
+tests/
