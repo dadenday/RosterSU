@@ -374,3 +374,48 @@ select { padding: 0.4rem 0.6rem; cursor: pointer; }
     color: var(--muted);
     margin-bottom: 0.5rem;
 }
+
+/* === API Preview Card Multi-Day === */
+.api-preview-card .date-section {
+    margin-bottom: var(--space-3);
+    padding-bottom: var(--space-3);
+    border-bottom: 1px solid rgba(148,163,184,0.15);
+}
+
+.api-preview-card .date-section:last-child {
+    margin-bottom: 0;
+    padding-bottom: 0;
+    border-bottom: none;
+}
+
+/* Date header styling */
+.api-preview-card .date-section > p:first-child {
+    font-weight: 600;
+    font-size: 0.85rem;
+    margin-bottom: 0.3rem;
+    color: var(--text);
+}
+
+[data-theme='dark'] .api-preview-card .date-section > p:first-child {
+    color: #f1f5f9;
+}
+
+/* Error state styling */
+.api-preview-card .date-section p[style*="ef4444"] {
+    color: #ef4444 !important;
+    font-size: 0.8rem;
+}
+
+[data-theme='dark'] .api-preview-card .date-section p[style*="ef4444"] {
+    color: #f87171 !important;
+}
+
+/* Warning state styling (No DB schedule) */
+.api-preview-card .date-section p[style*="f59e0b"] {
+    color: #f59e0b !important;
+    font-weight: 500;
+}
+
+[data-theme='dark'] .api-preview-card .date-section p[style*="f59e0b"] {
+    color: #fbbf24 !important;
+}
