@@ -308,7 +308,12 @@ def settings_page(request: Request, aliases:str="", aircraft_airbus:str="", airc
             config["processed_archive_dir"] = processed_archive_dir
 
         # Save flight sync toggle
-        config["enable_flight_sync"] = enable_flight_sync == "1"
+        flight_sync_enabled = enable_flight_sync == "1"
+        log_debug("flight_sync_save", {
+            "raw_value": repr(enable_flight_sync),
+            "parsed": flight_sync_enabled,
+        })
+        config["enable_flight_sync"] = flight_sync_enabled
 
         log_debug("settings_saving", {
             "received_scope": static_html_scope,
@@ -325,12 +330,16 @@ def settings_page(request: Request, aliases:str="", aircraft_airbus:str="", airc
         log_debug("settings_verified", {
             "saved_scope": saved.get("static_html_scope"),
             "saved_count": saved.get("static_html_count"),
+            "saved_enable_flight_sync": saved.get("enable_flight_sync"),
         })
 
         invalidate_aircraft_config_cache()
 
     # Render settings page (for both GET and POST)
     config = get_config()
+    log_debug("settings_render", {
+        "enable_flight_sync": config.get("enable_flight_sync"),
+    })
     aliases_val = ",".join(config.get("aliases", []))
     aircraft_config = config.get("aircraft", {})
 

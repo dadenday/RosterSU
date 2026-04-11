@@ -1,33 +1,14 @@
 {
   "aliases": [
     "Ấn",
-    "ẨN",
-    "Ẩn",
-    "Nguyễn Ngọc Ấn",
-    "NGỌC ẤN",
-    "Nguyễn Ngọc Ẩn",
-    "NGỌC ẨN",
-    "Ân",
-    "Án"
+    "Ẩn"
   ],
   "aircraft": {
     "airbus": [
-      "A300",
-      "A310",
-      "A318",
-      "A319",
-      "A320",
-      "A321",
-      "A330",
-      "A340",
-      "A350",
-      "A380"
+      "A320"
     ],
     "boeing": [
-      "B747",
-      "B767",
-      "B777",
-      "B787"
+      "B737"
     ],
     "other": []
   },
@@ -44,5 +25,5 @@
   "static_html_scope": "latest_n",
   "static_html_count": 5,
   "static_html_output_dir": "~/storage/downloads/Zalo/viewer",
-  "enable_flight_sync": false
+  "enable_flight_sync": true
 }
