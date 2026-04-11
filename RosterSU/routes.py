@@ -63,32 +63,6 @@ _flight_api_cache: dict = {}
 _flight_api_cache_lock = threading.Lock()
 
 
-def _run_immediate_flight_sync():
-    """Run flight sync immediately in background when enabled via settings."""
-    try:
-        from config import _load_merged_config
-        from scraper import AutoSyncService
-        from database import get_db
-
-        merged = _load_merged_config()
-        now = datetime.now()
-        today_iso = now.strftime("%Y-%m-%d")
-        today_db = now.strftime("%d.%m.%Y")
-
-        conn = get_db()
-        try:
-            service = AutoSyncService()
-            sync_result = service.run_sync(conn, today_iso, today_db)
-            for detail in sync_result.details:
-                debug_log(f"Flight sync: {detail}")
-        finally:
-            conn.close()
-
-        bump_db_rev()
-    except Exception as e:
-        debug_log(f"Flight sync error: {e}")
-
-
 def _refresh_api_cache(days=3):
     """Fetch API data for today + N future days and store in cache."""
     global _flight_api_cache
@@ -865,23 +839,6 @@ def settings_page(
             ),
             cls="card mb-3",
         ),
-        # Flight Sync manual trigger (outside form since it's a separate action)
-        Div(
-            H5("🔄 Đồng bộ chuyến bay"),
-            P(
-                "Nhấn nút để quét và cập nhật giờ bay ngay lập tức.",
-                style="font-size:0.8rem; color:var(--muted); margin-bottom:0.5rem;",
-            ),
-            Button(
-                "🔄 Đồng bộ ngay",
-                hx_post="/flight/sync",
-                hx_target="#flight-sync-status",
-                cls="btn-act",
-                style="width:100%;",
-            ),
-            Div(id="flight-sync-status"),
-            cls="card mb-3",
-        ),
         # Export section
         Div(
             H5("📤 Xuất dữ liệu"),
@@ -962,33 +919,6 @@ def post_export_html():
         return Div(
             P(f"❌ Lỗi: {html.escape(str(e), quote=True)}", cls="text-red-600"),
             id="static-viewer-status",
-        )
-
-
-@rt("/flight/sync", methods=["post"])
-def post_flight_sync():
-    """Manually trigger flight sync when user presses 'Sync Now' button."""
-    try:
-        config = get_config()
-        
-        # Check if flight sync is enabled
-        if not config.get("enable_flight_sync", False):
-            return Div(
-                P("⚠️ Flight sync chưa được bật. Vui lòng bật trong cài đặt.", cls="text-yellow-600"),
-                id="flight-sync-status",
-            )
-        
-        # Run sync in background thread (like old auto-trigger, but user-initiated)
-        threading.Thread(target=_run_immediate_flight_sync, daemon=True).start()
-        
-        return Div(
-            P("✅ Đã bắt đầu đồng bộ chuyến bay...", cls="text-green-700"),
-            id="flight-sync-status",
-        )
-    except Exception as e:
-        return Div(
-            P(f"❌ Lỗi: {html.escape(str(e), quote=True)}", cls="text-red-600"),
-            id="flight-sync-status",
         )
 
 
