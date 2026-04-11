@@ -2621,6 +2621,7 @@ def get_config():
             "auto_ingest_dir", "export_dir", "processed_archive_dir",
             "db_path",
             "static_html_scope", "static_html_count", "static_html_output_dir",
+            "enable_flight_sync",
         ]:
             if op_key not in config:
                 config[op_key] = DEFAULT_CONFIG[op_key]

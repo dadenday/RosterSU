@@ -28,6 +28,31 @@ from components import (
     invalidate_aircraft_config_cache,
 )
 
+
+def _run_immediate_flight_sync():
+    """Run flight sync immediately in background when enabled via settings."""
+    try:
+        from config import _load_merged_config
+        from scraper import AutoSyncService
+        from database import get_db
+
+        merged = _load_merged_config()
+        today_iso = datetime.now().strftime("%Y-%m-%d")
+        today_db = datetime.now().strftime("%d.%m.%Y")
+
+        conn = get_db()
+        try:
+            service = AutoSyncService()
+            sync_result = service.run_sync(conn, today_iso, today_db)
+            for detail in sync_result.details:
+                debug_log(f"Flight sync: {detail}")
+        finally:
+            conn.close()
+
+        bump_db_rev()
+    except Exception as e:
+        debug_log(f"Flight sync error: {e}")
+
 @rt("/status")
 def get_status(rev:int=0):
     s, current_rev = try_get_app_status()
@@ -290,6 +315,11 @@ def settings_page(request: Request, aliases:str="", aircraft_airbus:str="", airc
             "received_count": static_html_count,
         })
         save_config(config)
+
+        # If flight sync was just enabled, trigger an immediate sync
+        if config["enable_flight_sync"]:
+            log_debug("flight_sync_trigger", {"action": "immediate_sync"})
+            threading.Thread(target=_run_immediate_flight_sync, daemon=True).start()
 
         saved = get_config()
         log_debug("settings_verified", {

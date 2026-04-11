@@ -43,5 +43,6 @@
   "db_path": "roster_history.db",
   "static_html_scope": "latest_n",
   "static_html_count": 5,
-  "static_html_output_dir": "~/storage/downloads/Zalo/viewer"
+  "static_html_output_dir": "~/storage/downloads/Zalo/viewer",
+  "enable_flight_sync": false
 }
