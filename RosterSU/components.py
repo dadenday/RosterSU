@@ -514,7 +514,7 @@ def ApiPreviewCard(cache: dict, days: int = 3) -> Div:
             cls="api-preview-card",
         )
 
-    # Render each date section
+    # Render each date section - ONLY show dates with actual matched flights
     date_sections = []
     current_time = datetime.now().strftime("%H%M")
 
@@ -528,43 +528,20 @@ def ApiPreviewCard(cache: dict, days: int = 3) -> Div:
 
         day_data = dates_data[date_db]
 
-        # Error state
+        # Skip errors
         if day_data.get("error"):
-            date_sections.append(
-                Div(
-                    P(
-                        f"\u26a0\ufe0f {date_display}",
-                        style="font-weight:600; margin-bottom:0.3rem;",
-                    ),
-                    P(
-                        f"Lỗi kết nối API: {day_data.get('error_message', 'Không rõ lỗi')}",
-                        style="font-size:0.8rem; color:#ef4444;",
-                    ),
-                    cls="date-section",
-                )
-            )
             continue
 
-        # No API flights
+        # Skip if no API flights
         if not day_data.get("flights"):
-            date_sections.append(
-                Div(
-                    P(
-                        f"\U0001f4c5 {date_display}",
-                        style="font-weight:600; margin-bottom:0.3rem;",
-                    ),
-                    P(
-                        "Không có chuyến bay nào",
-                        style="font-size:0.8rem; color:var(--muted);",
-                    ),
-                    cls="date-section",
-                )
-            )
             continue
 
         # Match with DB
         db_flights = _load_db_flights_for_date(date_db)
-        has_db_schedule = len(db_flights) > 0
+
+        # Skip if no DB schedule
+        if not db_flights:
+            continue
 
         # Build matched flights
         db_by_call = {}
@@ -591,42 +568,8 @@ def ApiPreviewCard(cache: dict, days: int = 3) -> Div:
             matched = future_flights
         # Future days - show all flights
 
-        # No DB schedule warning
-        if not has_db_schedule and day_data.get("flights"):
-            date_sections.append(
-                Div(
-                    P(
-                        f"\U0001f4c5 {date_display} \u26a0\ufe0f",
-                        style="font-weight:600; margin-bottom:0.3rem;",
-                    ),
-                    P(
-                        "\u26a0\ufe0f Không có lịch DB hôm nay",
-                        style="font-size:0.75rem; color:#f59e0b;",
-                    ),
-                    P(
-                        "Chỉ hiển thị dữ liệu từ API",
-                        style="font-size:0.75rem; color:var(--muted);",
-                    ),
-                    cls="date-section",
-                )
-            )
-            continue
-
-        # No matched flights
+        # Skip if no matched flights
         if not matched:
-            date_sections.append(
-                Div(
-                    P(
-                        f"\U0001f4c5 {date_display}",
-                        style="font-weight:600; margin-bottom:0.3rem;",
-                    ),
-                    P(
-                        "Không có chuyến bay phù hợp",
-                        style="font-size:0.8rem; color:var(--muted);",
-                    ),
-                    cls="date-section",
-                )
-            )
             continue
 
         # Build table rows (same as before)
@@ -686,6 +629,16 @@ def ApiPreviewCard(cache: dict, days: int = 3) -> Div:
                 ),
                 cls="date-section",
             )
+        )
+
+    # If no dates have flights, show empty state
+    if not date_sections:
+        return Div(
+            P("Không có chuyến bay nào trong 3 ngày tới",
+              style="font-size:0.8rem; color:#94a3b8;"),
+            _api_preview_refresh_button(),
+            id="api-preview-card",
+            cls="api-preview-card",
         )
 
     return Div(
