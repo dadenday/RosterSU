@@ -1263,6 +1263,18 @@ def log_debug(event, data=None):
         "runtime_error",
         "auth_denied",
         "file_loop_error",
+        # Ingest visibility events - always log these
+        "parse_file_exception",
+        "parse_failed",
+        "scan_exception",
+        "scan_thread_error",
+        "auto_ingest_dir_missing",
+        "safe_path_rejected",
+        "safe_path_dropped_files",
+        "file_too_large",
+        "SHEET_SKIPPED",
+        "INGESTION_MANIFEST",
+        "INGESTION_QUARANTINED",
     }
     if APP.is_ingest_running() and not DEBUG_ENABLED and event not in critical_events:
         return
@@ -2485,7 +2497,12 @@ def parse_file(file_stream, filename, alias_regex):
                             )
 
     except Exception as e:
-        return None, str(e)
+        # Always return 3 values to match caller expectations
+        log_debug("parse_file_exception", {
+            "file": filename,
+            "error": str(e),
+        })
+        return None, str(e), None
 
     # === LAYER 4: CONFIDENCE SCORING ===
     if manifest:
@@ -2675,9 +2692,16 @@ def _run_ingest_once():
     """
     import concurrent.futures
     APP.set_ingest()
+    error_occurred = False
     try:
         if not os.path.exists(AUTO_INGEST_DIR):
-            update_status("Idle", "Monitoring folder...")
+            # Provide visibility into missing directory
+            update_status("Error", f"Folder not found: {AUTO_INGEST_DIR}")
+            log_debug("auto_ingest_dir_missing", {
+                "path": AUTO_INGEST_DIR,
+                "hint": "Run 'termux-setup-storage' and grant storage permission",
+            })
+            error_occurred = True
             return
 
         # Targeted glob patterns — avoid scanning non-roster files
@@ -2688,12 +2712,23 @@ def _run_ingest_once():
 
         # Path safety validation
         safe_files = []
+        dropped_files = []
         for f in target_files:
             try:
                 safe_path(AUTO_INGEST_DIR, f)
                 safe_files.append(f)
-            except ValueError:
-                continue
+            except ValueError as e:
+                dropped_files.append(os.path.basename(f))
+                log_debug("safe_path_rejected", {
+                    "file": os.path.basename(f),
+                    "reason": str(e),
+                })
+        
+        if dropped_files:
+            log_debug("safe_path_dropped_files", {
+                "count": len(dropped_files),
+                "files": dropped_files[:5],  # Log first 5
+            })
 
         if not safe_files:
             update_status("Idle", "Monitoring folder...")
@@ -2820,18 +2855,27 @@ def _run_ingest_once():
                         os.rename(safe_file, safe_file + ".nodate")
             except Exception as e:
                 log_debug("file_loop_error", {"file": f_path_res, "error": str(e)})
+                error_occurred = True
 
         if count > 0 or quarantined_count > 0:
             msg = f"Processed {count} files"
             if quarantined_count > 0:
                 msg += f", quarantined {quarantined_count}"
             update_status("Idle", msg)
-        else:
+        elif not error_occurred:
             update_status("Idle", "Monitoring folder...")
 
+    except Exception as e:
+        # Catch any unhandled exceptions
+        error_occurred = True
+        safe_err = html.escape(str(e), quote=True)
+        update_status("Error", f"Scan failed: {safe_err}")
+        log_debug("scan_exception", str(e))
     finally:
         APP.clear_ingest()
-        update_status("Idle", "Sẵn sàng")
+        # Only reset to "Sẵn sàng" if no error was reported
+        if not error_occurred:
+            update_status("Idle", "Sẵn sàng")
 
 
 def run_auto_ingest():

@@ -363,6 +363,11 @@ def post_scan():
         def _scan():
             try:
                 _run_ingest_once()
+            except Exception as e:
+                # Catch and report errors that escape _run_ingest_once
+                safe_err = html.escape(str(e), quote=True)
+                update_status("Error", f"Scan failed: {safe_err}")
+                log_debug("scan_thread_error", str(e))
             finally:
                 bump_db_rev()
 
