@@ -3233,12 +3233,12 @@ select { padding: 0.4rem 0.6rem; cursor: pointer; }
 
 /* === API Preview Card === */
 .api-preview-card {
-    background: #0f172a;
+    background: #000000;
     border-radius: var(--radius-md);
     padding: var(--space-3);
     margin-bottom: var(--space-3);
     box-shadow: var(--shadow-md);
-    border: 1px solid rgba(71,85,105,0.4);
+    border: 1px solid rgba(255,255,255,0.2);
 }
 
 .api-preview-card table {
@@ -3259,7 +3259,7 @@ select { padding: 0.4rem 0.6rem; cursor: pointer; }
 
 .api-preview-card td {
     padding: 0.25rem 0.4rem;
-    border-bottom: 1px solid rgba(148,163,184,0.1);
+    border-bottom: 2px solid #ffffff;
     vertical-align: middle;
     white-space: nowrap;
     text-align: center;
@@ -3269,38 +3269,38 @@ select { padding: 0.4rem 0.6rem; cursor: pointer; }
 
 /* Bigger border between flights - add border after every 2nd row (each flight) */
 .api-preview-card tbody tr:nth-child(2n) td {
-    border-bottom: 3px solid rgba(148,163,184,0.4);
-    padding-bottom: 0.5rem;
+    border-bottom: 4px solid #ffffff;
+    padding-bottom: 0.6rem;
 }
 
-/* Row above (Call, Open, Names, Type) - Red */
+/* Row above (Call, Open, Names, Type) - Bright Red */
 .api-preview-card tbody tr:nth-child(odd) td {
-    color: #ef4444 !important;
+    color: #ff4444 !important;
 }
 
-/* Row below (Route, Close, CkRow, Bay) - Blue */
+/* Row below (Route, Close, CkRow, Bay) - Bright Blue */
 .api-preview-card tbody tr:nth-child(even) td {
-    color: #3b82f6 !important;
+    color: #44aaff !important;
 }
 
 /* Status cell - Green, centered */
 .api-preview-card td[rowspan="2"] {
     font-weight: 700 !important;
     text-align: center !important;
-    color: #22c55e !important;
-    background: rgba(34,197,94,0.1) !important;
+    color: #44ff44 !important;
+    background: transparent !important;
 }
 
 /* Dark theme overrides */
 [data-theme='dark'] .api-preview-card {
-    background: #0f172a !important;
-    border-color: rgba(71,85,105,0.5);
+    background: #000000 !important;
+    border-color: rgba(255,255,255,0.3);
 }
 
 /* Empty state text */
 .api-preview-card p {
     font-size: 0.8rem;
-    color: #94a3b8;
+    color: #cccccc;
     margin-bottom: 0.5rem;
 }
 
