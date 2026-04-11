@@ -324,3 +324,53 @@ select { padding: 0.4rem 0.6rem; cursor: pointer; }
     background: rgba(15,23,42,0.9);
     border: none;
 }
+
+/* === API Preview Card === */
+.api-preview-card {
+    background: var(--card-bg);
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
+    margin-bottom: var(--space-3);
+    box-shadow: var(--shadow-md);
+    border: 1px solid rgba(148,163,184,0.2);
+}
+
+[data-theme='dark'] .api-preview-card {
+    background: #1e293b;
+    border-color: rgba(71,85,105,0.4);
+}
+
+.api-preview-card table {
+    width: 100%;
+    font-size: 0.75rem;
+    border-collapse: collapse;
+}
+
+.api-preview-card td {
+    padding: 0.2rem 0.4rem;
+    border-bottom: 1px solid rgba(148,163,184,0.15);
+    vertical-align: middle;
+    white-space: nowrap;
+}
+
+.api-preview-card tr:last-child td {
+    border-bottom: none;
+}
+
+/* Status cell styling - make it stand out */
+.api-preview-card td[rowspan="2"] {
+    font-weight: 600;
+    text-align: center;
+    background: rgba(99,102,241,0.08);
+}
+
+[data-theme='dark'] .api-preview-card td[rowspan="2"] {
+    background: rgba(99,102,241,0.15);
+}
+
+/* Empty state text */
+.api-preview-card p {
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin-bottom: 0.5rem;
+}
