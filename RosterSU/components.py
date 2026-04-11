@@ -440,9 +440,13 @@ def _recalculate_close(db_open: str, db_close: str, api_open: str) -> str:
 
     duration = db_close - db_open
     new_close = api_open + duration
-    All times in HHMM format.
+    API open time is in HHMM format (e.g. "0830"), DB times in HH:MM or HHhMM.
     Returns empty string on parse error (caller should handle).
     """
+    # Normalize API time from HHMM to HH:MM format
+    if api_open and len(api_open) == 4 and api_open.isdigit():
+        api_open = f"{api_open[:2]}:{api_open[2:]}"
+
     db_open_min = parse_time_to_minutes(db_open)
     db_close_min = parse_time_to_minutes(db_close)
     api_open_min = parse_time_to_minutes(api_open)

@@ -982,7 +982,8 @@ def post_flight_sync():
 def get_flight_preview():
     """Return the API preview card."""
     with _flight_api_cache_lock:
-        return ApiPreviewCard(cache=_flight_api_cache)
+        cache_copy = dict(_flight_api_cache)
+    return ApiPreviewCard(cache=cache_copy)
 
 
 @rt("/flight/preview/fetch", methods=["post"])
@@ -991,7 +992,8 @@ def post_flight_fetch():
     _refresh_api_cache()
     bump_db_rev()
     with _flight_api_cache_lock:
-        return ApiPreviewCard(cache=_flight_api_cache)
+        cache_copy = dict(_flight_api_cache)
+    return ApiPreviewCard(cache=cache_copy)
 
 
 @rt("/shutdown", methods=["post"])
