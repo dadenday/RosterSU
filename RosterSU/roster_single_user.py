@@ -3342,6 +3342,13 @@ if __name__ in {"__main__", "builtins"}:
 
     _run_flight_startup_sync()
 
+    # Refresh flight API preview cache at startup
+    try:
+        import routes
+        routes._refresh_api_cache()
+    except Exception as e:
+        debug_log(f"Flight API preview cache startup refresh error: {e}")
+
     os.makedirs(PROCESSED_ARCHIVE_DIR, exist_ok=True)
     threading.Thread(target=run_auto_ingest, daemon=True).start()
     threading.Thread(target=auto_open_launcher, daemon=True).start()
