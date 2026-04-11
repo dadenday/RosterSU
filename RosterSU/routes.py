@@ -236,7 +236,8 @@ def post_scan():
 def settings_page(request: Request, aliases:str="", aircraft_airbus:str="", aircraft_boeing:str="", aircraft_other:str="",
                   static_html_scope:str="", static_html_count:str="",
                   db_path:str="", auto_ingest_dir:str="", export_dir:str="",
-                  static_html_output_dir:str="", processed_archive_dir:str=""):
+                  static_html_output_dir:str="", processed_archive_dir:str="",
+                  enable_flight_sync: str = ""):
     """Handle GET (render form) and POST (save settings) for /settings."""
     if request.method == "POST":
         # Save settings
@@ -280,6 +281,9 @@ def settings_page(request: Request, aliases:str="", aircraft_airbus:str="", airc
             config["static_html_output_dir"] = static_html_output_dir
         if processed_archive_dir:
             config["processed_archive_dir"] = processed_archive_dir
+
+        # Save flight sync toggle
+        config["enable_flight_sync"] = enable_flight_sync == "1"
 
         log_debug("settings_saving", {
             "received_scope": static_html_scope,
@@ -461,6 +465,27 @@ def settings_page(request: Request, aliases:str="", aircraft_airbus:str="", airc
             Button("🗑️ Xóa tất cả dữ liệu", hx_post="/clear-data",
                    hx_confirm="Xóa tất cả lịch làm việc? Không thể hoàn tác.", 
                    cls="btn-act btn-del", style="width:100%;"),
+            cls="card mb-3"
+        ),
+        # Flight Delay Auto-Sync toggle
+        Div(
+            H5("Quet web san bay"),
+            P("Tu dong cap nhat gio bay va quầy check-in tu web san bay.",
+              style="font-size:0.8rem; color:var(--muted); margin-bottom:0.5rem;"),
+            Div(
+                CheckboxX(
+                    id="enable-flight-sync",
+                    name="enable_flight_sync",
+                    value="1",
+                    checked=config.get("enable_flight_sync", False),
+                ),
+                Label(
+                    "Kich hoat tu dong do web bai dap may bay:",
+                    for_="enable-flight-sync",
+                    style="margin-left:0.3rem; font-weight:500;",
+                ),
+                style="display:flex; align-items:center; margin-bottom:0.5rem;"
+            ),
             cls="card mb-3"
         ),
         # Export section
