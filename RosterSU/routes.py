@@ -238,6 +238,8 @@ def get():
             hx_swap="outerHTML",
             style="display:none;",
         ),
+        # API Preview Card
+        Div(ApiPreviewCard(cache=_flight_api_cache), id="api-preview-wrapper"),
         Div(H4("📋 Lịch làm việc"), style="margin-top:0.5rem;"),
         Div(initial_list, id="roster-list"),
         Script("""
