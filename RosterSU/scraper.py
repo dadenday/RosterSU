@@ -105,20 +105,24 @@ class FlightScraper:
 # ---------------------------------------------------------------------------
 
 
-def parse_time_hhmm(time_str: str) -> int:
+def parse_time_hhmm(time_str: str) -> Optional[int]:
     """Parse 'HHMM' or 'HHhMM' to total minutes since midnight.
+
+    Returns None if unparseable, 0 for midnight.
 
     Examples:
         '0830' -> 510
         '08h30' -> 510
         '1000' -> 600
+        '00h00' -> 0
+        '' -> None
     """
     if not time_str:
-        return 0
+        return None
     # Normalize: replace 'h' or ':' with nothing
     cleaned = time_str.replace("h", "").replace(":", "").strip()
     if len(cleaned) < 3:
-        return 0
+        return None
     # Pad if needed (e.g., "830" -> "0830")
     cleaned = cleaned.zfill(4)
     try:
@@ -126,18 +130,23 @@ def parse_time_hhmm(time_str: str) -> int:
         minutes = int(cleaned[2:4])
         return hours * 60 + minutes
     except ValueError:
-        return 0
+        return None
 
 
 def format_time_hhmm_style(total_minutes: int) -> str:
     """Format total minutes to 'HHhMM' style.
 
+    Handles next-day rollover via modulo 24h.
+
     Examples:
         510 -> "08h30"
         600 -> "10h00"
+        1500 -> "01h00" (25h00 wraps to next day)
     """
     if total_minutes < 0:
         total_minutes = 0
+    # Handle next-day rollover
+    total_minutes = total_minutes % (24 * 60)
     hours = total_minutes // 60
     minutes = total_minutes % 60
     return f"{hours:02d}h{minutes:02d}"
@@ -178,6 +187,8 @@ class DelayCalculator:
         for db_f in db_flights:
             call = self.normalize_flight_no(db_f.get("Call", ""))
             if call:
+                if call in db_lookup:
+                    logger.warning(f"Duplicate DB flight for {call} — last entry wins")
                 db_lookup[call] = db_f
 
         results = []
@@ -224,7 +235,7 @@ class DelayCalculator:
         db_open_min = parse_time_hhmm(match.db_open)
         db_close_min = parse_time_hhmm(match.db_close)
 
-        if db_open_min == 0 or db_close_min == 0:
+        if db_open_min is None or db_close_min is None:
             logger.warning(
                 f"Cannot parse times for {s.flight_no}: "
                 f"Open={match.db_open}, Close={match.db_close}"
@@ -233,17 +244,16 @@ class DelayCalculator:
 
         duration = db_close_min - db_open_min
         if duration < 0:
-            logger.warning(
-                f"Negative duration for {s.flight_no}: "
-                f"{match.db_open}-{match.db_close}"
-            )
+            duration += 24 * 60  # Handle midnight crossing
+        if duration < 0:
+            logger.warning(f"Still negative duration for {s.flight_no}: {duration}")
             return None
 
         # Check if there's a delay
         sched = parse_time_hhmm(s.scheduled_time)
         estim = parse_time_hhmm(s.estimated_time)
 
-        if sched == estim or estim == 0:
+        if not s.estimated_time or sched == estim:
             # No delay - but still update ckRow if it changed
             new_ckrow = s.ck_row
             old_ckrow = match.db_ckrow or ""
