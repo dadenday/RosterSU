@@ -31,6 +31,7 @@ CONFIG_FILE = os.path.join(PROJECT_ROOT, "rosterSU_config.json")
 DEFAULT_CONFIG = {
     # User preferences
     "aliases": ["Ấn", "ẨN", "Ẩn", "Nguyễn Ngọc Ấn", "NGỌC ẤN", "Nguyễn Ngọc Ẩn", "NGỌC ẨN", "Ân", "Án"],
+    "enable_flight_sync": False,  # Toggle for flight delay auto-sync
     "aircraft": {
         "airbus": ["A300", "A310", "A318", "A319", "A320", "A321", "A330", "A340", "A350", "A380"],
         "boeing": ["B747", "B767", "B777", "B787"],
