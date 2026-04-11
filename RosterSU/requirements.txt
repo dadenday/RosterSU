@@ -5,3 +5,4 @@
 python-fasthtml
 python-calamine
 rapidfuzz
+requests
