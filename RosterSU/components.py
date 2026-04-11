@@ -414,3 +414,248 @@ def RosterList(filter_month=None, page=1, count_history_fn=None, load_history_fn
         return Div(pagination, *cards, **htmx)
 
     return Div(*cards, **htmx)
+
+
+# ============================================================================
+# API Preview Card Helpers
+# ============================================================================
+
+def _crosscheck_route(db_route: Optional[str], api_route: Optional[str]) -> str:
+    """Extract destination from route, prefer API if available.
+
+    PQC-HAN -> HAN (destination only)
+    """
+    # Prefer API route
+    route = api_route or db_route or ""
+    if not route:
+        return ""
+    # Extract destination (second part of PQC-HAN)
+    if "-" in route:
+        return route.split("-")[-1].strip()
+    return route.strip()
+
+
+def _recalculate_close(db_open: str, db_close: str, api_open: str) -> str:
+    """Recalculate close time preserving flight duration.
+
+    duration = db_close - db_open
+    new_close = api_open + duration
+    API open time is in HHMM format (e.g. "0830"), DB times in HH:MM or HHhMM.
+    Returns empty string on parse error (caller should handle).
+    """
+    # Normalize API time from HHMM to HH:MM format
+    if api_open and len(api_open) == 4 and api_open.isdigit():
+        api_open = f"{api_open[:2]}:{api_open[2:]}"
+
+    db_open_min = parse_time_to_minutes(db_open)
+    db_close_min = parse_time_to_minutes(db_close)
+    api_open_min = parse_time_to_minutes(api_open)
+
+    if db_open_min is None or db_close_min is None or api_open_min is None:
+        return ""
+
+    def minutes_to_hhmm(m: int) -> str:
+        m = m % 1440  # Handle day wrap
+        return f"{m // 60:02d}:{m % 60:02d}"
+
+    duration = db_close_min - db_open_min
+    new_close_min = api_open_min + duration
+    return minutes_to_hhmm(new_close_min)
+
+
+def _crosscheck_bay(db_bay: Optional[str], api_gate: str) -> str:
+    """Crosscheck bay/gate, prefer API gate.
+
+    Fallback to DB bay if API gate is empty/null.
+    """
+    if api_gate and api_gate.strip():
+        return api_gate.strip()
+    return db_bay or ""
+
+
+def _load_db_flights_for_date(date_db: str) -> list:
+    """Load flights from DB for a specific date. Returns empty list on error."""
+    try:
+        from database import get_db
+
+        conn = get_db()
+        cursor = conn.execute(
+            "SELECT full_data FROM work_schedule WHERE work_date = ?",
+            (date_db,),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            data = json.loads(row[0])
+            return data.get("flights", [])
+        return []
+    except Exception as e:
+        import logging
+
+        logging.warning(f"Failed to load DB flights for {date_db}: {e}")
+        return []
+
+
+def ApiPreviewCard(cache: dict, days: int = 3) -> Div:
+    """Render API preview card with cross-referenced flight data for multiple days.
+
+    Args:
+        cache: Module-level _flight_api_cache dict with "dates" key
+        days: Number of days to show (default 3: today + 2 future)
+    """
+    dates_data = cache.get("dates", {})
+
+    if not dates_data:
+        # Complete empty state
+        return Div(
+            P("Không có dữ liệu", style="font-size:0.8rem; color:var(--muted);"),
+            _api_preview_refresh_button(),
+            id="api-preview-card",
+            cls="api-preview-card",
+        )
+
+    # Render each date section - ONLY show dates with actual matched flights
+    date_sections = []
+    current_time = datetime.now().strftime("%H%M")
+
+    for i in range(days):
+        date_obj = datetime.now() + timedelta(days=i)
+        date_db = date_obj.strftime("%d.%m.%Y")
+        date_display = date_obj.strftime("%A %d/%m")  # e.g., "Saturday 11/04"
+
+        if date_db not in dates_data:
+            continue
+
+        day_data = dates_data[date_db]
+
+        # Skip errors
+        if day_data.get("error"):
+            continue
+
+        # Skip if no API flights
+        if not day_data.get("flights"):
+            continue
+
+        # Match with DB
+        db_flights = _load_db_flights_for_date(date_db)
+
+        # Skip if no DB schedule
+        if not db_flights:
+            continue
+
+        # Build matched flights
+        db_by_call = {}
+        for f in db_flights:
+            call = f.get("Call", "").strip().upper()
+            if call:
+                db_by_call[call] = f
+
+        matched = []
+        for scraped in day_data["flights"]:
+            call = scraped.flight_no.strip().upper()
+            if call in db_by_call:
+                matched.append((db_by_call[call], scraped))
+
+        # Filter past flights (only for today)
+        if i == 0:  # Today - filter past
+            future_flights = []
+            for db_flight, scraped in matched:
+                flight_time = scraped.scheduled_time or ""
+                if not flight_time:
+                    continue
+                if flight_time >= current_time:
+                    future_flights.append((db_flight, scraped))
+            matched = future_flights
+        # Future days - show all flights
+
+        # Skip if no matched flights
+        if not matched:
+            continue
+
+        # Build table rows (same as before)
+        table_rows = []
+        for db_flight, scraped in matched:
+            call = db_flight.get("Call", "")
+            db_route = db_flight.get("Route", "")
+            api_route = getattr(scraped, "route", None)
+
+            db_open_raw = db_flight.get("Open", "")
+            db_close_raw = db_flight.get("Close", "")
+
+            api_open = scraped.estimated_time or scraped.scheduled_time or ""
+            if api_open:
+                api_open_z = api_open.zfill(4)
+                api_open_formatted = f"{api_open_z[:2]}:{api_open_z[2:]}"
+            else:
+                api_open_formatted = db_open_raw
+
+            if api_open and db_open_raw and db_close_raw:
+                close = _recalculate_close(db_open_raw, db_close_raw, api_open)
+            else:
+                close = db_close_raw
+
+            status = scraped.status or db_flight.get("Status", "")
+            names = db_flight.get("Names", "")
+            ckrow = scraped.ck_row or db_flight.get("ckRow", "")
+            flight_type = db_flight.get("Type", "")
+            bay = _crosscheck_bay(db_flight.get("Bay"), scraped.gate)
+            route = _crosscheck_route(db_route, api_route)
+
+            row1 = Tr(
+                Td(call),
+                Td(api_open_formatted if api_open else "--"),
+                Td(status, rowspan="2"),
+                Td(names),
+                Td(flight_type),
+            )
+            row2 = Tr(
+                Td(route),
+                Td(close if close else "--"),
+                Td(ckrow),
+                Td(bay),
+            )
+            table_rows.append(row1)
+            table_rows.append(row2)
+
+        date_sections.append(
+            Div(
+                P(
+                    f"\U0001f4c5 {date_display}",
+                    style="font-weight:600; margin-bottom:0.3rem;",
+                ),
+                Div(
+                    Table(Tbody(*table_rows)),
+                    style="overflow-x: auto;",
+                ),
+                cls="date-section",
+            )
+        )
+
+    # If no dates have flights, show empty state
+    if not date_sections:
+        return Div(
+            P("Không có chuyến bay nào trong 3 ngày tới",
+              style="font-size:0.8rem; color:#94a3b8;"),
+            _api_preview_refresh_button(),
+            id="api-preview-card",
+            cls="api-preview-card",
+        )
+
+    return Div(
+        Div(*date_sections),
+        _api_preview_refresh_button(),
+        id="api-preview-card",
+        cls="api-preview-card",
+    )
+
+
+def _api_preview_refresh_button() -> Button:
+    """Return the standard refresh button for API preview card."""
+    return Button(
+        "🔄 Cập nhật",
+        hx_post="/flight/preview/fetch",
+        hx_target="#api-preview-card",
+        hx_swap="outerHTML",
+        cls="btn-act",
+        style="width:100%; margin-top:0.5rem;",
+    )

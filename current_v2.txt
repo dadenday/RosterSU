@@ -1,0 +1,168 @@
+def process_row_content_v2(clean_items, name_idx, alias_regex=None, inside_cols=None, shift_col=None, is_maca=False, is_vsbx=False):
+    """
+    Logic A: Shift Scanning (Hybrid Anchor / Strict Mapping)
+    Logic B: Flight Scanning (Route-Centric + Multi-Zone)
+    """
+    if not clean_items: return None
+
+    # Logic A: Shift Scanning
+    has_route = any(is_valid_route(x) for x in clean_items)
+    
+    if name_idx != -1 and not has_route:
+        # STRICT MODE: Use shift_col if provided (Anchor-based)
+        if shift_col is not None and shift_col < len(clean_items):
+            item = clean_items[shift_col]
+            v_upper = str(item or "").upper()
+            
+            # Time Range
+            if RE_TIME_RANGE.search(v_upper):
+                return {'type': 'shift', 'data': clean_time(item)}
+            # Keyword
+            if "HỌC" in v_upper: return {'type': 'shift', 'data': 'HỌC'}
+            if v_upper in ["OFF", "NGHỈ", "PHÉP"]: return {'type': 'shift', 'data': v_upper}
+            # Fallback: if anchor column is empty, don't return OFF yet, try proximity
+
+        # LEGACY/PROXIMITY FALLBACK: Restrict to 10 cells
+        right_side_items = clean_items[name_idx+1 : name_idx+11]
+
+        # Weak Anchor: Time Range (Priority)
+        for item in right_side_items:
+            if RE_TIME_RANGE.search(str(item)):
+                return {'type': 'shift', 'data': clean_time(item)}
+
+        # Weak Anchor: Keyword
+        for item in right_side_items:
+            v_upper = str(item).upper()
+            if "HỌC" in v_upper: return {'type': 'shift', 'data': 'HỌC'}
+            if v_upper in ["OFF", "NGHỈ", "PHÉP"]: return {'type': 'shift', 'data': v_upper}
+
+        # Strong Anchor: Phone (Restricted range)
+        # ONLY return OFF if no time was found in the range
+        has_phone = any(RE_PHONE.match(str(x).replace(".", "").replace(" ", "")) for x in right_side_items)
+        if has_phone:
+            return {'type': 'shift', 'data': 'OFF'}
+            
+        # Strict Column Fallback (if we had a shift_col but it was empty)
+        if shift_col is not None and shift_col < len(clean_items):
+             if not clean_val(clean_items[shift_col]):
+                 return {'type': 'shift', 'data': 'OFF'}
+        
+        # MÃ CA sheet logic: if name is found but no time/phone, it's likely OFF in this simple list
+        if is_maca:
+            # Check if all other cells in row are empty
+            other_cells = [x for i, x in enumerate(clean_items) if i != name_idx and x]
+            if not other_cells:
+                return {'type': 'shift', 'data': 'OFF'}
+
+        # VS-BX Name-based fallback: if name is found in VS-BX sheet, but no info found, assume OFF
+        if is_vsbx:
+            return {'type': 'shift', 'data': 'OFF'}
+
+    # Logic B: Flight Logic (Anchor-Centric Multi-Zone)
+    route_idx = -1
+    for i, item in enumerate(clean_items):
+        if is_valid_route(item):
+            route_idx = i
+            break
+            
+    if route_idx != -1:
+        call_val = clean_items[route_idx - 1] if route_idx > 0 else ""
+        type_val = clean_items[route_idx - 2] if route_idx > 1 else ""
+        
+        # Find Anchor (Bay or Close Time)
+        anchor_idx = -1
+        # Scan forward from route to find times and bay
+        for i in range(route_idx + 1, len(clean_items)):
+            val = clean_items[i]
+            # Time pattern
+            if RE_TIME.search(val):
+                anchor_idx = i
+            # Bay pattern (short, follows time) - Must be non-empty (v5.8)
+            if val and len(val) <= 4 and anchor_idx != -1:
+                anchor_idx = i
+                break # Bay is the strongest anchor
+        
+        if anchor_idx == -1: anchor_idx = route_idx # Fallback
+
+        # Extract metadata relative to anchor once per row
+        times_found = []
+        for i in range(anchor_idx, route_idx, -1):
+            if RE_TIME.search(clean_items[i]):
+                times_found.append(clean_time(clean_items[i]))
+        
+        row_close = times_found[0] if len(times_found) >= 1 else ''
+        row_open = times_found[1] if len(times_found) >= 2 else ''
+        row_bay = ''
+        anchor_val = clean_items[anchor_idx] if anchor_idx < len(clean_items) else ""
+        if anchor_val and len(anchor_val) <= 4 and not RE_TIME.search(anchor_val):
+            row_bay = anchor_val
+
+        # REFINED CAPTURE (v5.8): Priority given to inside_cols if provided
+        # Phase 2: Uses FlightRow dataclass instead of dict
+        found_flights: List[FlightRow] = []
+        
+        if inside_cols:
+            # STRICT MODE: Only check identified Băng Chuyền columns
+            # ZONE_AUTHORITY = SHIFT_SHEET_ONLY: Flight parser must not assign zone
+            for col_idx in inside_cols:
+                if col_idx < len(clean_items):
+                    cand = clean_items[col_idx]
+                    if check_name_match(cand, alias_regex):
+                        f_row = FlightRow(
+                            type=type_val, call=call_val, route=clean_items[route_idx],
+                            open=row_open, close=row_close, bay=row_bay,
+                            names=cand, zone=''
+                        )
+                        found_flights.append(f_row)
+            
+            if found_flights:
+                return {'type': 'flight_list', 'data': found_flights}
+            
+            # If we are in strict mode and didn't find the name in inside_cols, 
+            # we should NOT return anything, UNLESS this is an outbound probe (name_idx == -1)
+            if name_idx == -1:
+                f_row = FlightRow(
+                    type=type_val, call=call_val, route=clean_items[route_idx],
+                    open=row_open, close=row_close, bay=row_bay, names='', zone=''
+                )
+                return {'type': 'flight', 'data': f_row}
+            
+            return None # Ignore the "Noise" in other columns (Sân Đỗ, Gate)
+            
+        else:
+            # LEGACY PROXIMITY MODE
+            # ZONE_AUTHORITY = SHIFT_SHEET_ONLY: Flight parser must not assign zone
+            for offset in range(1, 5): # Check next 4 items
+                idx = anchor_idx + offset
+                if idx >= len(clean_items): break
+                
+                cand = clean_items[idx]
+                is_match = check_name_match(cand, alias_regex) if alias_regex else is_valid_name_generic(cand)
+                
+                if is_match:
+                    f_row = FlightRow(
+                        type=type_val, call=call_val, route=clean_items[route_idx],
+                        open=row_open, close=row_close, bay=row_bay,
+                        names=cand, zone=''
+                    )
+                    found_flights.append(f_row)
+            
+            if found_flights:
+                return {'type': 'flight_list', 'data': found_flights}
+            
+            # Legacy Fallback (Potential Noise)
+            f_row = FlightRow(
+                type=type_val, call=call_val, route=clean_items[route_idx],
+                open=row_open, close=row_close, bay=row_bay, names='', zone=''
+            )
+            if name_idx != -1 and name_idx < len(clean_items):
+                f_row = FlightRow(
+                    type=type_val, call=call_val, route=clean_items[route_idx],
+                    open=row_open, close=row_close, bay=row_bay,
+                    names=clean_items[name_idx], zone=''
+                )
+                return {'type': 'flight', 'data': f_row}
+            elif name_idx == -1:
+                return {'type': 'flight', 'data': f_row}
+
+    return None

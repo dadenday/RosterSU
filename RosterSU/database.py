@@ -145,10 +145,26 @@ def init_db():
                   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     debug_log("Created ingestion_manifest table if not exists")
     c.execute("CREATE INDEX IF NOT EXISTS idx_ingestion_manifest_fingerprint ON ingestion_manifest(dataset_fingerprint)")
-    
+
+    # Migration: add ckrow column if missing
+    add_ckrow_column()
+
     conn.commit()
     conn.close()
     debug_log("Database initialization completed")
+
+
+def add_ckrow_column():
+    """Add ckrow column to work_schedule if it doesn't exist (idempotent)."""
+    with db_conn() as conn:
+        try:
+            conn.execute("ALTER TABLE work_schedule ADD COLUMN ckrow TEXT")
+            conn.commit()
+            debug_log("Added ckrow column to work_schedule")
+        except Exception as e:
+            # Column may already exist — ignore duplicate column errors
+            if "duplicate column name" not in str(e).lower():
+                debug_log(f"add_ckrow_column error: {str(e)}")
 
 
 # ============================================================================

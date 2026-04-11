@@ -174,6 +174,7 @@ def _render_frozen_card(row):
                         <th>🚪</th>
                         <th>🔧</th>
                         <th>👥</th>
+                        <th>🏷️</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -193,6 +194,7 @@ def _render_frozen_card(row):
                         <td>{html_mod.escape(f.get("Bay", ""), quote=True)}</td>
                         <td>{html_mod.escape(ftype, quote=True)}</td>
                         <td>{html_mod.escape(f.get("Names", ""), quote=True)}</td>
+                        <td>{html_mod.escape(f.get("ckRow", ""), quote=True)}</td>
                     </tr>
             '''
 

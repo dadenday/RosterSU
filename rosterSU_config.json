@@ -1,0 +1,29 @@
+{
+  "aliases": [
+    "Ấn",
+    "Ẩn"
+  ],
+  "aircraft": {
+    "airbus": [
+      "A320"
+    ],
+    "boeing": [
+      "B737"
+    ],
+    "other": []
+  },
+  "port": 8501,
+  "history_limit": 60,
+  "page_size": 50,
+  "port_wait_timeout": 10,
+  "ingest_interval": 5,
+  "max_upload_mb": 20,
+  "auto_ingest_dir": "~/storage/downloads/Zalo",
+  "export_dir": "~/storage/downloads/Zalo",
+  "processed_archive_dir": "processed_archive",
+  "db_path": "roster_history.db",
+  "static_html_scope": "latest_n",
+  "static_html_count": 5,
+  "static_html_output_dir": "~/storage/downloads/Zalo/viewer",
+  "enable_flight_sync": true
+}

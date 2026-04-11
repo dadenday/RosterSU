@@ -166,6 +166,7 @@ from config import (
     DEBUG_FILE,
     CONFIG_FILE,
     DEFAULT_CONFIG,
+    _load_merged_config,
     AUTO_INGEST_DIR,
     EXPORT_DIR,
     PROCESSED_ARCHIVE_DIR,
@@ -2620,6 +2621,7 @@ def get_config():
             "auto_ingest_dir", "export_dir", "processed_archive_dir",
             "db_path",
             "static_html_scope", "static_html_count", "static_html_output_dir",
+            "enable_flight_sync",
         ]:
             if op_key not in config:
                 config[op_key] = DEFAULT_CONFIG[op_key]
@@ -3228,6 +3230,113 @@ select { padding: 0.4rem 0.6rem; cursor: pointer; }
 
 /* === Utility: Hidden form === */
 .hidden-form { display: none; }
+
+/* === API Preview Card === */
+.api-preview-card {
+    background: #000000;
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
+    margin-bottom: var(--space-3);
+    box-shadow: var(--shadow-md);
+    border: 1px solid rgba(255,255,255,0.2);
+}
+
+.api-preview-card table {
+    width: 100%;
+    font-size: 0.75rem;
+    font-weight: 700;
+    border-collapse: collapse;
+    background: transparent !important;
+}
+
+.api-preview-card tbody {
+    background: transparent !important;
+}
+
+.api-preview-card tr {
+    background: transparent !important;
+}
+
+.api-preview-card td {
+    padding: 0.25rem 0.4rem;
+    border-bottom: 2px solid #ffffff;
+    vertical-align: middle;
+    white-space: nowrap;
+    text-align: center;
+    font-weight: 700;
+    background: transparent !important;
+}
+
+/* Bigger border between flights - add border after every 2nd row (each flight) */
+.api-preview-card tbody tr:nth-child(2n) td {
+    border-bottom: 4px solid #ffffff;
+    padding-bottom: 0.6rem;
+}
+
+/* Row above (Call, Open, Names, Type) - Bright Red */
+.api-preview-card tbody tr:nth-child(odd) td {
+    color: #ff4444 !important;
+}
+
+/* Row below (Route, Close, CkRow, Bay) - Bright Blue */
+.api-preview-card tbody tr:nth-child(even) td {
+    color: #44aaff !important;
+}
+
+/* Status cell - GREEN, centered, high priority */
+.api-preview-card tbody tr td[rowspan="2"] {
+    font-weight: 700 !important;
+    text-align: center !important;
+    color: #44ff44 !important;
+    background: transparent !important;
+}
+
+/* Dark theme overrides */
+[data-theme='dark'] .api-preview-card {
+    background: #000000 !important;
+    border-color: rgba(255,255,255,0.3);
+}
+
+/* Empty state text */
+.api-preview-card p {
+    font-size: 0.8rem;
+    color: #cccccc;
+    margin-bottom: 0.5rem;
+}
+
+/* === API Preview Card Multi-Day === */
+.api-preview-card .date-section {
+    margin-bottom: var(--space-4);
+    padding-bottom: var(--space-4);
+    border-bottom: 2px solid rgba(148,163,184,0.2);
+}
+
+.api-preview-card .date-section:last-child {
+    margin-bottom: 0;
+    padding-bottom: 0;
+    border-bottom: none;
+}
+
+/* Date header styling */
+.api-preview-card .date-section > p:first-child {
+    font-weight: 700;
+    font-size: 0.85rem;
+    margin-bottom: 0.3rem;
+    color: #e2e8f0;
+}
+
+/* Error state styling */
+.api-preview-card .date-section p[style*="ef4444"] {
+    color: #ef4444 !important;
+    font-size: 0.8rem;
+    font-weight: 700;
+}
+
+/* Warning state styling (No DB schedule) */
+.api-preview-card .date-section p[style*="f59e0b"] {
+    color: #f59e0b !important;
+    font-weight: 700;
+}
 """
 
 hdrs = (
@@ -3306,6 +3415,47 @@ if __name__ in {"__main__", "builtins"}:
     debug_log("Application starting", "MAIN")
     debug_log(f"Debug mode is {'enabled' if DEBUG_ENABLED else 'disabled'}", "MAIN")
     init_db()
+
+    # --- Flight Delay Auto-Sync ---
+    def _run_flight_startup_sync():
+        """Run flight sync at startup if enabled. Non-blocking, logs results."""
+        try:
+            merged = _load_merged_config()
+            if not merged.get("enable_flight_sync", False):
+                debug_log("Flight sync: disabled in config, skipping")
+                return
+
+            from scraper import AutoSyncService
+            from database import get_db
+
+            today_iso = datetime.now().strftime("%Y-%m-%d")
+            today_db = datetime.now().strftime("%d.%m.%Y")
+
+            conn = get_db()
+            try:
+                service = AutoSyncService()
+                sync_result = service.run_sync(conn, today_iso, today_db)
+                for detail in sync_result.details:
+                    debug_log(f"Flight sync: {detail}")
+            finally:
+                conn.close()
+
+            # Bump revision to trigger UI refresh
+            from state import bump_db_rev
+            bump_db_rev()
+        except Exception as e:
+            debug_log(f"Flight sync startup error: {e}")
+            # Do NOT crash -- app continues without sync
+
+    _run_flight_startup_sync()
+
+    # Refresh flight API preview cache at startup (today + 2 future days)
+    try:
+        import routes
+        routes._refresh_api_cache(days=3)
+    except Exception as e:
+        debug_log(f"Flight API preview cache startup refresh error: {e}")
+
     os.makedirs(PROCESSED_ARCHIVE_DIR, exist_ok=True)
     threading.Thread(target=run_auto_ingest, daemon=True).start()
     threading.Thread(target=auto_open_launcher, daemon=True).start()
