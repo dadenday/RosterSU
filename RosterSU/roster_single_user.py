@@ -3246,6 +3246,15 @@ select { padding: 0.4rem 0.6rem; cursor: pointer; }
     font-size: 0.75rem;
     font-weight: 700;
     border-collapse: collapse;
+    background: transparent !important;
+}
+
+.api-preview-card tbody {
+    background: transparent !important;
+}
+
+.api-preview-card tr {
+    background: transparent !important;
 }
 
 .api-preview-card td {
@@ -3255,35 +3264,36 @@ select { padding: 0.4rem 0.6rem; cursor: pointer; }
     white-space: nowrap;
     text-align: center;
     font-weight: 700;
+    background: transparent !important;
 }
 
 /* Bigger border between flights - add border after every 2nd row (each flight) */
 .api-preview-card tbody tr:nth-child(2n) td {
-    border-bottom: 3px solid rgba(148,163,184,0.3);
+    border-bottom: 3px solid rgba(148,163,184,0.4);
     padding-bottom: 0.5rem;
 }
 
 /* Row above (Call, Open, Names, Type) - Red */
 .api-preview-card tbody tr:nth-child(odd) td {
-    color: #ef4444;
+    color: #ef4444 !important;
 }
 
 /* Row below (Route, Close, CkRow, Bay) - Blue */
 .api-preview-card tbody tr:nth-child(even) td {
-    color: #3b82f6;
+    color: #3b82f6 !important;
 }
 
 /* Status cell - Green, centered */
 .api-preview-card td[rowspan="2"] {
-    font-weight: 700;
-    text-align: center;
-    color: #22c55e;
-    background: rgba(34,197,94,0.08);
+    font-weight: 700 !important;
+    text-align: center !important;
+    color: #22c55e !important;
+    background: rgba(34,197,94,0.1) !important;
 }
 
 /* Dark theme overrides */
 [data-theme='dark'] .api-preview-card {
-    background: #0f172a;
+    background: #0f172a !important;
     border-color: rgba(71,85,105,0.5);
 }
 
