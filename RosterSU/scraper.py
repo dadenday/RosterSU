@@ -74,16 +74,21 @@ class FlightScraper:
             }
             resp = requests.get(API_BASE_URL, params=params, timeout=REQUEST_TIMEOUT)
             resp.raise_for_status()
-            data = resp.json()
+            payload = resp.json()
+            # API returns {"success": true, "data": [...]} — extract the array
+            flights_data = payload.get("data", []) if isinstance(payload, dict) else payload
+            if not isinstance(flights_data, list):
+                logger.warning(f"Unexpected API response type: {type(flights_data)}")
+                return []
 
             flights = []
-            for item in data:
+            for item in flights_data:
                 flights.append(ScrapedFlight(
                     flight_no=item.get("flightNo", "").strip().upper(),
                     scheduled_time=item.get("scheduledTime", ""),
                     estimated_time=item.get("estimatedTime", ""),
                     actual_time=item.get("actualTime"),
-                    ck_row=item.get("ckRow", ""),
+                    ck_row=item.get("ckRow") or "",
                     gate=item.get("gate", ""),
                     status=item.get("notesEn", "") or item.get("status", ""),
                     route=item.get("route", ""),

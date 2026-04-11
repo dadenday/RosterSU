@@ -1,0 +1,131 @@
+class FlightDatasetCandidate:
+    """
+    Represents a candidate flight dataset from a single sheet.
+    Used for intra-file dataset selection.
+    """
+    sheet_name: str
+    fingerprint: str
+    row_count: int
+    rows: List[Tuple]  # Normalized rows: (personnel_id, flight_code, open_time, close_time)
+    sheet_date: Optional[str] = None
+    score: int = 0
+    is_empty: bool = False
+
+
+class DatasetSelector:
+    """
+    Feature A, B, C: Intra-File Dataset Fingerprinting and Selection.
+    
+    Ensures ONLY ONE flight dataset per file is ingested.
+    Detects and filters duplicate/copied sheets.
+    """
+    
+    # Score bonus for sheets matching the global date
+    DATE_MATCH_BONUS = 50
+    
+    @staticmethod
+    def normalize_flight_row(row_data: Dict) -> Tuple:
+        """
+        Normalize a flight row for fingerprinting.
+        Returns a tuple: (personnel_id, flight_code, open_time, close_time)
+        """
+        personnel = str(row_data.get('Names', '')).strip().upper()
+        flight = str(row_data.get('Call', '')).strip().upper()
+        open_t = str(row_data.get('Open', '')).strip().upper()
+        close_t = str(row_data.get('Close', '')).strip().upper()
+        
+        # Normalize time formats
+        open_t = DatasetSelector._normalize_time(open_t)
+        close_t = DatasetSelector._normalize_time(close_t)
+        
+        return (personnel, flight, open_t, close_t)
+    
+    @staticmethod
+    def _normalize_time(t: str) -> str:
+        """Normalize time string to consistent format."""
+        if not t:
+            return ""
+        # Replace common variants
+        t = t.replace('H', ':').replace('h', ':').replace('.', ':')
+        # Extract HH:MM
+        match = re.search(r'(\d{1,2})[:]?(\d{2})', t)
+        if match:
+            h, m = match.groups()
+            return f"{int(h):02d}:{m}"
+        return t
+    
+    @staticmethod
+    def compute_fingerprint(rows: List[Tuple]) -> str:
+        """
+        Compute SHA256 fingerprint for a list of normalized rows.
+        The fingerprint is order-independent (rows are sorted before hashing).
+        """
+        if not rows:
+            return ""
+        
+        # Sort rows deterministically for order-independent fingerprinting
+        sorted_rows = sorted(rows)
+        
+        # Convert to JSON string
+        rows_json = json.dumps(sorted_rows, ensure_ascii=False)
+        
+        # Compute SHA256 hash
+        return hashlib.sha256(rows_json.encode('utf-8')).hexdigest()
+    
+    @staticmethod
+    def extract_flight_rows_from_sheet(flights: List[Dict]) -> List[Tuple]:
+        """
+        Extract and normalize flight rows from parsed sheet data.
+        """
+        normalized = []
+        for f in flights:
+            row = DatasetSelector.normalize_flight_row(f)
+            # Only include rows with actual data (not just empty strings)
+            if any(row):
+                normalized.append(row)
+        return normalized
+    
+    @staticmethod
+    def build_candidates(
+        flight_sheets: List[Tuple[str, List[Dict]]],
+        global_date: str
+    ) -> List[FlightDatasetCandidate]:
+        """
+        Build list of candidate datasets from all flight sheets.
+        
+        Args:
+            flight_sheets: List of (sheet_name, flights_list) tuples
+            global_date: The authoritative date for this file
+            
+        Returns:
+            List of FlightDatasetCandidate objects with fingerprints and scores
+        """
+        candidates = []
+        
+        for sheet_name, flights in flight_sheets:
+            # Extract normalized rows
+            normalized_rows = DatasetSelector.extract_flight_rows_from_sheet(flights)
+            
+            # Check if empty
+            is_empty = len(normalized_rows) == 0
+            
+            # Compute fingerprint
+            fingerprint = DatasetSelector.compute_fingerprint(normalized_rows)
+            
+            # Calculate score
+            score = len(normalized_rows)  # Base score = row count
+            
+            # Create candidate
+            candidate = FlightDatasetCandidate(
+                sheet_name=sheet_name,
+                fingerprint=fingerprint,
+                row_count=len(normalized_rows),
+                rows=normalized_rows,
+                is_empty=is_empty
+            )
+            candidates.append(candidate)
+        
+        return candidates
+    
+    @staticmethod
+    def select_authoritative(

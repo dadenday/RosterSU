@@ -1,0 +1,2576 @@
+import os
+import sqlite3
+import json
+import re
+import time
+import threading
+import secrets
+import io
+import csv
+import socket
+import subprocess
+import http.client
+import sys
+import html
+import unicodedata
+import glob
+import tempfile
+import asyncio
+import argparse
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+
+# === AGENT INTENT =====================================
+AGENT_INTENT = {
+    "app_type": "local_single_user",
+    "network": "localhost_only",
+    "security_level": "high_local",
+    "refactor_allowed": False,
+    "module_split_allowed": False,
+    "db_schema_mutable": False,
+}
+# ======================================================
+
+# === AGENT CONTRACT ===================================
+# SECTION: DATABASE
+# INVARIANTS:
+# - SQLite must remain WAL mode
+# - All writes must be behind DB_LOCK
+# - INSERT policy is STRICT OVERWRITE
+# AGENT RULES:
+# - Do NOT change schema
+# - Do NOT add new tables
+# =======================================================
+
+event = {
+    "type": "status",
+    "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+}
+
+from nicegui import ui, app as nicegui_app
+from nicegui.events import UploadEventArguments
+from starlette.responses import Response
+from python_calamine import CalamineWorkbook
+from rapidfuzz import fuzz
+from collections import defaultdict
+import concurrent.futures
+
+# ==========================================
+# ⚙️ CONFIGURATION & CONSTANTS
+# ==========================================
+# Parse command line arguments
+parser = argparse.ArgumentParser(description='RosterMaster Application')
+parser.add_argument('--debug', action='store_true', help='Enable debug logging')
+args = parser.parse_args()
+DEBUG_ENABLED = args.debug
+
+DB_FILE = "roster_history.db"
+DEBUG_FILE = "roster_debug.json"
+# Adjust these paths for specific Android/Termux setups if needed
+AUTO_INGEST_DIR = os.path.expanduser("~/storage/downloads/Zalo")
+EXPORT_DIR = os.path.expanduser("~/storage/downloads/Zalo")
+APP_TOKEN_FILE = ".app_token"
+DEFAULT_PORT = 8501
+DEFAULT_HISTORY_LIMIT = 60
+PORT_WAIT_TIMEOUT = 10
+INGEST_INTERVAL = 5
+MAX_UPLOAD_MB = 20
+FILE_READ_CHUNK_SIZE = 65536
+TOKEN_LENGTH_BYTES = 16
+TOKEN_LENGTH_HEX = 32
+
+SHIFT_SHEET_MARKERS = {
+    "required": [
+        "CẢNG HÀNG KHÔNG QUỐC TẾ PHÚ QUỐC",
+        "LỊCH LÀM VIỆC ĐỘI VỆ SINH",
+        "LỊCH LÀM VIỆC BỘ PHẬN CXHL"
+    ],
+    "optional": [
+        "TRẢ HÀNH LÝ",
+        "SÂN ĐỖ",
+        "BĂNG CHUYỀN",
+        "PVHL Phân công nhiệm vụ",
+        "BẢNG PHÂN CÔNG CA LÀM VIỆC"
+    ]
+}
+
+def debug_log(message, category="GENERAL"):
+    """Log a message if debug mode is enabled"""
+    if DEBUG_ENABLED:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        print(f"[DEBUG][{category}][{timestamp}] {message}")
+
+# ==========================================
+# ⚡ REGEX PRECOMPILE (Hot Paths)
+# ==========================================
+# Matches time ranges like "08:00 - 16:30" or "8h00-17h00"
+# INTENT: permissive time matching from messy spreadsheets - DO NOT tighten without dataset regression
+RE_TIME_RANGE = re.compile(r'(\d{1,2}[:hH]\d{2}(?::\d{2})?)\s*[-–]\s*(\d{1,2}[:hH]\d{2}(?::\d{2})?)')
+# Matches single time values like "08:00" or "14h30"
+# INTENT: permissive time matching from messy spreadsheets - DO NOT tighten without dataset regression
+RE_TIME = re.compile(r'(\d{1,2}[:hH]\d{2})')
+# Matches flight routes like "SGN - PQC"
+# INTENT: permissive route matching from messy spreadsheets - DO NOT tighten without dataset regression
+RE_ROUTE = re.compile(r'^[A-Z]{3}\s*(?:-|–|—)\s*[A-Z]{3}$')
+# Matches Vietnamese phone numbers starting with 0
+# INTENT: permissive phone number matching from messy spreadsheets - DO NOT tighten without dataset regression
+RE_PHONE = re.compile(r'^0\d{9,11}$')
+# Matches 6-digit staff IDs
+# INTENT: permissive ID matching from messy spreadsheets - DO NOT tighten without dataset regression
+RE_ID6 = re.compile(r'^\d{6}$')
+# Matches dates in formats like DD.MM.YYYY, DD/MM/YY, etc.
+# INTENT: permissive date matching from messy spreadsheets - DO NOT tighten without dataset regression
+RE_DATE = re.compile(r'(\d{1,2}[./-]\d{1,2}[./-](?:\d{4}|\d{2}))')
+# Specific pattern for shift times in roster sheets
+# INTENT: permissive shift time matching from messy spreadsheets - DO NOT tighten without dataset regression
+RE_SHIFT_TIME_PATTERN = re.compile(r'\d{1,2}[:hH]\d{2}(?::\d{2})?\s*[-–]\s*\d{1,2}[:hH]\d{2}(?::\d{2})?')
+# Matches date markers in sheet headers (e.g., "NGÀY 10/02/2026")
+# INTENT: permissive header date matching from messy spreadsheets - DO NOT tighten without dataset regression
+RE_HEADER_DATE_PATTERN = re.compile(r'NGÀY.*?(\d{1,2}[./-]\d{1,2}[./-](?:\d{4}|\d{2}))')
+
+# Matches English date headers like "FLIGHT PLAN: FRI, 13 FEB 2026"
+RE_ENGLISH_DATE_PATTERN = re.compile(r'(?:DATE|PLAN|FOR|ON).*?(\d{1,2})\s*([A-Z]{3})\s*(\d{4}|\d{2})', re.I)
+
+ENGLISH_MONTHS = {
+    "JAN": "01", "FEB": "02", "MAR": "03", "APR": "04", "MAY": "05", "JUN": "06",
+    "JUL": "07", "AUG": "08", "SEP": "09", "OCT": "10", "NOV": "11", "DEC": "12"
+}
+
+# Matches zone patterns like "Sân đỗ (Gate 1)"
+# INTENT: permissive zone matching from messy spreadsheets - DO NOT tighten without dataset regression
+RE_ZONE_PATTERN = re.compile(r'(.*)\((.*)\)')
+# Used for cleaning up multiple spaces
+# INTENT: permissive space cleanup from messy spreadsheets - DO NOT tighten without dataset regression
+RE_MULTIPLE_SPACES = re.compile(r' +')
+
+# --- CELL CLASSIFICATION BITMASK (Phase 6) ---
+CELL_ROUTE = 1
+CELL_TIME  = 2
+CELL_OFF   = 4
+CELL_NAME  = 8
+# ---------------------------------------------
+
+
+
+# ==========================================
+# 🧠 GLOBAL STATE
+# ==========================================
+
+# === AGENT CONTRACT ===================================
+# SECTION: STATE
+# INVARIANTS:
+# - All state mutations must be behind STATE_LOCK
+# - APP_STATUS and ROSTER_VERSION only mutated by update_status
+# - Thread-safe getters must be used
+# AGENT RULES:
+# - Do NOT add new global mutable state
+# - Do NOT bypass locks
+# - Do NOT change update_status contract
+# =======================================================
+
+STATE_LOCK = threading.RLock()
+DB_LOCK = threading.RLock()
+SHUTDOWN_EVENT = threading.Event()
+INGEST_RUNNING = threading.Event()
+UI_CONNECTED = threading.Event()
+
+APP_STATUS: dict[str, str] = {"state": "Idle", "details": "Ready"}
+ROSTER_VERSION = 0
+
+_TOKEN_PATTERNS = []
+_TOKEN_PATTERNS_TS = 0
+_token_lock = threading.Lock()
+
+def _refresh_token_patterns():
+    global _TOKEN_PATTERNS, _TOKEN_PATTERNS_TS
+    now = time.time()
+    with _token_lock:
+        if now - _TOKEN_PATTERNS_TS > 60:
+            _TOKEN_PATTERNS = [
+                re.compile(re.escape(t))
+                for t in get_known_tokens() if t
+            ]
+            _TOKEN_PATTERNS_TS = now
+
+def get_app_status():
+    """Thread-safe getter for APP_STATUS and ROSTER_VERSION."""
+    with STATE_LOCK:
+        return APP_STATUS.copy(), ROSTER_VERSION
+
+def try_get_app_status(timeout=0.05):
+    """
+    UI-safe state getter.
+    Never blocks UI longer than `timeout` seconds.
+    """
+    acquired = STATE_LOCK.acquire(timeout=timeout)
+    if not acquired:
+        # Fallback — do NOT block UI
+        return {"state": "Busy", "details": "Resuming..."}, ROSTER_VERSION
+
+    try:
+        return APP_STATUS.copy(), ROSTER_VERSION
+    finally:
+        STATE_LOCK.release()
+
+def update_status(state, details=""):
+    acquired = STATE_LOCK.acquire(timeout=0.1)
+    if not acquired:
+        # Never block UI because of status updates
+        return
+
+    try:
+        global APP_STATUS, ROSTER_VERSION
+        APP_STATUS = {"state": state, "details": details}
+
+        if state == "Idle" and "Processed" in details:
+            ROSTER_VERSION += 1
+    finally:
+        STATE_LOCK.release()
+
+def update_running_status(details: str = ""):
+    # Running status is only valid during real ingest
+    debug_log(f"update_running_status called with details='{details}'", "RUNNING_STATUS")
+    if INGEST_RUNNING.is_set():
+        debug_log("INGEST_RUNNING is set, calling update_status", "RUNNING_STATUS")
+        update_status("Running", details)
+    else:
+        debug_log("INGEST_RUNNING is not set, skipping update_status", "RUNNING_STATUS")
+
+def wait_for_port(port: int, host: str = '127.0.0.1', timeout: int = PORT_WAIT_TIMEOUT) -> bool:
+    """Wait for a TCP port to become active."""
+    debug_log(f"wait_for_port called with port={port}, host={host}, timeout={timeout}", "NETWORK")
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        try:
+            debug_log(f"Attempting connection to {host}:{port}", "NETWORK")
+            with socket.create_connection((host, port), timeout=0.5):
+                debug_log(f"Successfully connected to {host}:{port}", "NETWORK")
+                return True
+        except (ConnectionRefusedError, socket.timeout, OSError) as e:
+            debug_log(f"Connection failed to {host}:{port}, error: {str(e)}", "NETWORK")
+            time.sleep(0.2)
+    debug_log(f"Timeout waiting for {host}:{port}", "NETWORK")
+    return False
+
+def wait_for_http(port: int, host: str = '127.0.0.1', timeout: int = PORT_WAIT_TIMEOUT) -> bool:
+    """Wait for a HTTP response from the port."""
+    debug_log(f"wait_for_http called with port={port}, host={host}, timeout={timeout}", "NETWORK")
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            debug_log(f"Attempting HTTP request to {host}:{port}/", "NETWORK")
+            conn = http.client.HTTPConnection(host, port, timeout=0.5)
+            conn.request("GET", "/")
+            conn.close()
+            debug_log(f"Successful HTTP response from {host}:{port}/", "NETWORK")
+            return True
+        except Exception as e:
+            debug_log(f"HTTP request failed to {host}:{port}/, error: {str(e)}", "NETWORK")
+            time.sleep(0.3)
+    debug_log(f"Timeout waiting for HTTP response from {host}:{port}/", "NETWORK")
+    return False
+
+def launch_browser(url):
+    """Attempt to open URL in browser using Termux commands."""
+    debug_log(f"launch_browser called with url={url}", "BROWSER")
+    try:
+        # Strategy 1: termux-open-url (Requires termux-api)
+        debug_log("Attempting to launch browser using termux-open-url", "BROWSER")
+        res = subprocess.run(['termux-open-url', url], check=False, stderr=subprocess.DEVNULL)
+        if res.returncode == 0:
+            debug_log("Successfully launched browser using termux-open-url", "BROWSER")
+            return
+        else:
+            debug_log(f"termux-open-url failed with return code {res.returncode}", "BROWSER")
+    except Exception as e:
+        debug_log(f"Exception in termux-open-url: {str(e)}", "BROWSER")
+        # Redact sensitive data before logging
+        print(f"BROWSER_LAUNCH_ERROR (termux-open-url): {e}", file=sys.stderr)
+        log_data = redact_sensitive_data({
+            'error': str(e),
+            'function': 'launch_browser',
+            'strategy': 'termux-open-url',
+            'type': type(e).__name__,
+            'location': 'launch_browser.termux-open-url'
+        })
+        log_debug('runtime_error', log_data)
+
+    try:
+        # Strategy 2: Android Intent via 'am' (More universal in Termux)
+        debug_log("Attempting to launch browser using Android Intent", "BROWSER")
+        subprocess.run(['am', 'start', '-a', 'android.intent.action.VIEW', '-d', url],
+                      check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        debug_log("Launched browser using Android Intent", "BROWSER")
+    except Exception as e:
+        debug_log(f"Exception in Android Intent: {str(e)}", "BROWSER")
+        # Redact sensitive data before logging
+        print(f"BROWSER_LAUNCH_ERROR (android-intent): {e}", file=sys.stderr)
+        log_data = redact_sensitive_data({
+            'error': str(e),
+            'function': 'launch_browser',
+            'strategy': 'android-intent',
+            'type': type(e).__name__,
+            'location': 'launch_browser.android-intent',
+            'recoverable': True
+        })
+        log_debug('runtime_error', log_data)
+
+def auto_open_launcher():
+    """Wait for server and then open browser."""
+    debug_log(f"auto_open_launcher called, waiting for server on port {DEFAULT_PORT}", "LAUNCHER")
+    print(f"Waiting for RosterMaster server on port {DEFAULT_PORT}...")
+    if wait_for_http(DEFAULT_PORT):
+        url = f"http://127.0.0.1:{DEFAULT_PORT}"
+        debug_log(f"Server responded, launching browser with URL: {url}", "LAUNCHER")
+        print(f"Launching browser: {url}")
+        launch_browser(url)
+    else:
+        debug_log(f"Server on port {DEFAULT_PORT} not responding, trying fallback", "LAUNCHER")
+        # Fallback attempt
+        print("Default port not responding, trying fallback...")
+        launch_browser("http://127.0.0.1:8000")
+
+_LOG_LOCK = threading.Lock()
+_LOGGING_LOCAL = threading.local()
+
+# ==========================================
+# 🔐 SECURITY & REDACTION
+# ==========================================
+
+# === AGENT CONTRACT ===================================
+# SECTION: SECURITY
+# INVARIANTS:
+# - Token auth must remain local-only
+# - All sensitive data must be redacted
+# - Formula injection must be prevented
+# AGENT RULES:
+# - Do NOT weaken redaction
+# - Do NOT remove token validation
+# - Do NOT allow external network access
+# =======================================================
+
+def log_debug(event, data=None):
+    # Return immediately if INGEST_RUNNING.is_set() and DEBUG_ENABLED is False,
+    # unless the event is one of the critical ones
+    critical_events = {'db_write_error', 'bulk_db_error', 'runtime_error', 'auth_denied'}
+    if INGEST_RUNNING.is_set() and not DEBUG_ENABLED and event not in critical_events:
+        return
+    
+    debug_log(f"log_debug called with event='{event}', data='{data}'", "LOG_DEBUG")
+    
+    # Recursion guard using threading.local()
+    if getattr(_LOGGING_LOCAL, "active", False):
+        print('LOG_DROPPED', file=sys.stderr)
+        return
+    _LOGGING_LOCAL.active = True
+
+    try:
+        # Redact sensitive data before writing to the log file
+        try:
+            redacted_data = redact_sensitive_data(data)
+        except Exception as e:
+            # If redact_sensitive_data fails, log to stderr and use original data
+            import sys
+            print(f"REDACT_ERROR: Failed to redact data: {str(e)}", file=sys.stderr)
+            redacted_data = data  # Use original data if redaction fails
+
+        # Use lock when checking file size and performing rotation
+        with _LOG_LOCK:
+            # 5.1 Simple size-based rotation for DEBUG_FILE
+            if os.path.exists(DEBUG_FILE) and os.path.getsize(DEBUG_FILE) > 5_000_000:
+                try:
+                    os.replace(DEBUG_FILE, DEBUG_FILE + ".old")
+                except Exception as e:
+                    print("LOG ROTATION FAILED:", e, file=sys.stderr)
+
+            record = {
+                "ts": datetime.utcnow().isoformat(),
+                "event": event,
+                "data": redacted_data
+            }
+            try:
+                with open(DEBUG_FILE, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+            except Exception as e:
+                # Use fallback logging to stderr to avoid infinite recursion
+                import sys
+                print(f"LOG_ERROR: Failed to write to debug file: {str(e)}", file=sys.stderr)
+                # Prevent infinite recursion if logging fails
+    finally:
+        _LOGGING_LOCAL.active = False
+
+def get_known_tokens():
+    """
+    Retrieve known tokens for redaction.
+    """
+    known_tokens = []
+    app_token = globals().get('APP_TOKEN')
+    if app_token:
+        known_tokens.append(app_token)
+
+    if os.path.exists('.app_token'):
+        try:
+            with open('.app_token', 'r', encoding='utf-8') as f:
+                token = f.read().strip()
+                if token:
+                    known_tokens.append(token)
+        except Exception as e:
+            # Using print to stderr to avoid circular dependency with redact_sensitive_data
+            import sys
+            print(f"ERROR in get_known_tokens: {str(e)}", file=sys.stderr)
+    
+    return known_tokens
+
+def redact_sensitive_data(data):
+    """
+    Recursively redact sensitive keys from data structures.
+
+    If data is a dictionary, recursively check for keys like 'token', 'app_token',
+    'secret', 'password', 'X-App-Token' (case-insensitive) and replace their
+    values with '[REDACTED]'. If data is a string, check if it contains any
+    known token and redact it.
+    """
+    global _TOKEN_PATTERNS
+
+    # Define sensitive keys to redact (case-insensitive)
+    sensitive_keys = {
+        'token', 'app_token', 'secret', 'password', 'x-app-token',
+        'authorization', 'auth_token', 'api_key', 'access_token',
+        'refresh_token', 'sesskey', 'session_key'
+    }
+
+    # Initialize or update cached patterns if needed
+    _refresh_token_patterns()
+
+    # Handle cases where data is not a dictionary, list, or string
+    if isinstance(data, dict):
+        redacted_dict = {}
+        for key, value in data.items():
+            # Check if key matches any sensitive key (case-insensitive)
+            if key.lower() in sensitive_keys:
+                redacted_dict[key] = '[REDACTED]'
+            else:
+                # Recursively redact the value
+                redacted_dict[key] = redact_sensitive_data(value)
+        return redacted_dict
+    elif isinstance(data, list):
+        return [redact_sensitive_data(item) for item in data]
+    elif isinstance(data, str):
+        # Redact known tokens from the string using cached patterns
+        redacted_str = data
+        for pattern in _TOKEN_PATTERNS:
+            redacted_str = pattern.sub('[REDACTED]', redacted_str)
+        return redacted_str
+    else:
+        # Return the data as is if it's not a dict, list, or string
+        return data
+
+def safe_path(base_dir: str, path: str) -> str:
+    real_base = os.path.realpath(base_dir)
+    real_path = os.path.realpath(os.path.join(real_base, path))
+
+    if not real_path.startswith(real_base + os.sep):
+        raise ValueError("Unsafe file path detected")
+
+    if os.path.islink(real_path):
+        raise ValueError("Symlink traversal detected")
+
+    return real_path
+
+def load_app_token():
+    # Attempt to read the token from APP_TOKEN_FILE
+    if os.path.exists(APP_TOKEN_FILE):
+        try:
+            with open(APP_TOKEN_FILE, "r", encoding="utf-8") as handle:
+                token = handle.read().strip()
+                # Check if the token is valid (32 hex characters)
+                if len(token) == TOKEN_LENGTH_HEX and all(c in '0123456789abcdefABCDEF' for c in token):
+                    return token
+        except (IOError, OSError) as e:
+            # Redact sensitive data before logging
+            import sys
+            print(f"TOKEN_READ_ERROR: {e}", file=sys.stderr)
+            log_data = redact_sensitive_data({
+                'error': str(e), 
+                'function': 'load_app_token', 
+                'file': APP_TOKEN_FILE,
+                'type': type(e).__name__,
+                'location': 'load_app_token.file_read'
+            })
+            log_debug('runtime_error', log_data)
+            # If there's an issue reading the file, proceed to generate a new token
+    
+    # Generate a new token using secrets.token_hex(16)
+    token = secrets.token_hex(TOKEN_LENGTH_BYTES)
+    
+    # Reset cached patterns to ensure new token is included next time
+    global _TOKEN_PATTERNS
+    _TOKEN_PATTERNS = []
+
+    # Write the new token to the file with 0600 permissions
+    fd = os.open(APP_TOKEN_FILE, os.O_CREAT | os.O_WRONLY | os.O_EXCL, 0o600)
+    try:
+        handle = os.fdopen(fd, 'w', encoding="utf-8")
+    except Exception:
+        os.close(fd)
+        raise
+    try:
+        handle.write(token)
+    finally:
+        handle.close()
+    
+    return token
+
+APP_TOKEN = load_app_token()
+
+def require_app_token(req):
+    if req.client and req.client.host not in ('127.0.0.1', '::1', 'localhost'):
+        log_debug("auth_denied", {"reason": "Non-local host", "host": req.client.host})
+        return Response('Forbidden', status_code=403)
+    token = req.headers.get("X-App-Token")
+    if token != APP_TOKEN:
+        log_debug("auth_denied", {"reason": "Invalid token"})
+        return Response("Forbidden", status_code=403)
+    return None
+
+def sanitize_formula(val):
+    """
+    Sanitize formula strings that start with =, +, -, @ by prefixing with a single quote (').
+    This prevents formula injection attacks in exports.
+    """
+    if val and isinstance(val, str):
+        stripped = val.lstrip()
+        if stripped.startswith(('=', '+', '-', '@')):
+            return "'" + val
+    return val
+
+# ==========================================
+# 💾 DATABASE LAYER
+# ==========================================
+def get_db():
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute('PRAGMA journal_mode=WAL;')
+    return conn
+
+@contextmanager
+def db_conn():
+    conn = get_db()
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+def init_db():
+    """Initialize SQLite table for storing roster data."""
+    debug_log("init_db called", "DATABASE")
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS work_schedule
+                 (work_date TEXT PRIMARY KEY,
+                  full_data TEXT,
+                  date_iso TEXT,
+                  last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    debug_log("Created work_schedule table if not exists", "DATABASE")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_work_schedule_date_iso ON work_schedule(date_iso)")
+    debug_log("Created index on work_schedule.date_iso if not exists", "DATABASE")
+    conn.commit()
+    conn.close()
+    debug_log("Database initialization completed", "DATABASE")
+
+def clear_db():
+    """Wipe the entire database."""
+    debug_log("clear_db called", "DATABASE")
+    with DB_LOCK:
+        conn = get_db()
+        try:
+            conn.execute("DELETE FROM work_schedule")
+            conn.commit()
+            debug_log("Deleted all records from work_schedule table", "DATABASE")
+        finally:
+            conn.close()
+    debug_log("Database cleared successfully", "DATABASE")
+
+def load_history(limit=DEFAULT_HISTORY_LIMIT, filter_mode="All"):
+    """Fetch entries, sorted by date, with SQL limiting."""
+    debug_log(f"load_history called with limit={limit}, filter_mode={filter_mode}", "DATABASE")
+    with db_conn() as conn:
+        c = conn.cursor()
+        try:
+            where = ""
+            params = []
+
+            if filter_mode == "This Month":
+                now = datetime.now()
+                start = now.replace(day=1).strftime("%Y-%m-%d")
+                next_start = (now.replace(day=1) + timedelta(days=32)).replace(day=1).strftime("%Y-%m-%d")
+                where = "WHERE date_iso >= ? AND date_iso < ?"
+                params.extend([start, next_start])
+                debug_log(f"Applied 'This Month' filter: {start} to {next_start}", "DATABASE")
+
+            # SAFE: 'where' is controlled via logic above, params are bound
+            query = f"""
+                SELECT work_date, full_data, last_updated
+                FROM work_schedule
+                {where}
+                ORDER BY date_iso DESC
+                LIMIT ?
+            """
+            params.append(limit)
+            debug_log(f"Executing query with {len(params)} parameters", "DATABASE")
+            c.execute(query, params)
+            result = [dict(r) for r in c.fetchall()]
+            debug_log(f"Loaded {len(result)} history entries", "DATABASE")
+            return result
+        except Exception as e:
+            debug_log(f"DB Load Error: {str(e)}", "DATABASE")
+            print(f"DB Load Error: {e}")
+            raise
+
+def is_valid_roster_year(date_obj):
+    """
+    Validates if a date object or string is within the expected roster range (2020-2100).
+    Specifically targets the 01.01.1900 Excel zero-date artifact.
+    """
+    if not date_obj: return False
+    
+    try:
+        if isinstance(date_obj, datetime):
+            year = date_obj.year
+        elif isinstance(date_obj, str):
+            # Try parsing from normalized format DD.MM.YYYY
+            norm = normalize_date_str(date_obj)
+            parts = norm.split(".")
+            if len(parts) == 3:
+                year = int(parts[2])
+            else:
+                return False
+        else:
+            return False
+            
+        return 2020 <= year <= 2100
+    except (ValueError, IndexError, AttributeError):
+        return False
+
+def normalize_date_str(date_str):
+    """
+    Normalizes date strings to DD.MM.YYYY format.
+    Example: 10.2.2026 -> 10.02.2026
+    Example: 10/02/26 -> 10.02.2026
+    """
+    if not date_str or date_str == "Unknown": return date_str
+    # Replace common separators with dots
+    cleaned = date_str.replace("/", ".").replace("-", ".").replace(" ", ".")
+    # Clean up any double dots from multiple spaces or mixed separators
+    while ".." in cleaned:
+        cleaned = cleaned.replace("..", ".")
+        
+    parts = cleaned.split(".")
+    if len(parts) == 3:
+        d, m, y = parts
+        # Ensure 2 digits for day and month
+        d = d.zfill(2)
+        m = m.zfill(2)
+        # Handle 2-digit years
+        if len(y) == 2:
+            y = "20" + y
+        elif len(y) == 4:
+            pass
+        else:
+            # unexpected year format, return as is or handle?
+            pass
+        return f"{d}.{m}.{y}"
+    return cleaned
+
+def to_iso_date(date_str):
+    norm_date = normalize_date_str(date_str)
+    for fmt in ("%d.%m.%Y", "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%y"):
+        try:
+            return datetime.strptime(norm_date, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    log_debug("date_parse_error", {"date": date_str})
+    raise ValueError(f"Invalid date: {date_str}")
+
+def save_entry_overwrite(date_str, new_data):
+    """
+    STRICT OVERWRITE POLICY:
+    Delete existing entry for this date, replace with new data.
+    """
+    date_str = normalize_date_str(date_str)
+    debug_log(f"save_entry_overwrite called with date_str='{date_str}', new_data keys={list(new_data.keys()) if isinstance(new_data, dict) else type(new_data)}", "DATABASE")
+    final_data = {
+        "date": date_str,
+        "shift": new_data.get('shift'),
+        "flights": new_data.get('flights', [])
+    }
+
+    if final_data.get('shift') == "OFF":
+        final_data['flights'] = []
+        debug_log("Set flights to empty list because shift is OFF", "DATABASE")
+
+    with DB_LOCK:
+        with db_conn() as conn:
+            try:
+                json_data = json.dumps(final_data, ensure_ascii=False, default=str)
+                iso_date = to_iso_date(date_str)
+                debug_log(f"Saving entry with work_date='{date_str}', date_iso='{iso_date}'", "DATABASE")
+                conn.execute("INSERT OR REPLACE INTO work_schedule (work_date, full_data, date_iso) VALUES (?, ?, ?)",
+                          (date_str, json_data, iso_date))
+                conn.commit()
+                debug_log(f"Successfully saved entry for date {date_str}", "DATABASE")
+            except Exception as e:
+                debug_log(f"Error saving entry for date {date_str}: {str(e)}", "DATABASE")
+                log_debug("db_write_error", {"date": date_str, "error": str(e)})
+                raise
+
+def save_entries_bulk(entries):
+    """
+    Optimized batch insert.
+    Takes a list of consolidated result dictionaries (with 'date' key).
+    Performs a single transaction for all entries.
+    """
+    debug_log(f"save_entries_bulk called with {len(entries) if entries else 0} entries", "DATABASE")
+    if not entries: 
+        debug_log("No entries to save, returning early", "DATABASE")
+        return
+
+    with DB_LOCK:
+        with db_conn() as conn:
+            try:
+                data_tuples = []
+                for entry in entries:
+                    date_str = normalize_date_str(entry['date'])
+                    flights = [] if entry.get('shift') == 'OFF' else entry.get('flights', [])
+
+                    final_data = {
+                        "date": date_str,
+                        "shift": entry.get('shift'),
+                        "flights": flights
+                    }
+                    json_data = json.dumps(final_data, ensure_ascii=False, default=str)
+                    iso_date = to_iso_date(date_str)
+                    data_tuples.append((date_str, json_data, iso_date))
+
+                debug_log(f"Preparing to save {len(data_tuples)} entries in bulk", "DATABASE")
+                conn.execute("BEGIN IMMEDIATE")
+                conn.executemany("INSERT OR REPLACE INTO work_schedule (work_date, full_data, date_iso) VALUES (?, ?, ?)", data_tuples)
+                conn.commit()
+                debug_log(f"Successfully saved {len(data_tuples)} entries in bulk", "DATABASE")
+            except Exception as e:
+                debug_log(f"Bulk save error: {str(e)}", "DATABASE")
+                log_debug("bulk_db_error", str(e))
+                raise
+
+# ==========================================
+# 📤 EXPORT & INTEGRATION
+# ==========================================
+def generate_ical_content():
+    """Generate .ics content string."""
+    rows = load_history()
+    if not rows:
+        return None
+
+    ical_lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//RosterMaster//v4.2//EN",
+        "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH"
+    ]
+
+    count = 0
+    for r in rows:
+        try:
+            date_str = r['work_date']
+            data = json.loads(r['full_data'])
+            flights = data.get('flights', [])
+            
+            dt_obj = datetime.strptime(date_str, "%d.%m.%Y")
+            
+            for f in flights:
+                t_open = f.get('Open', '')
+                t_close = f.get('Close', '')
+                
+                # Only export flights with valid times
+                if not t_open or not t_close: continue
+                
+                open_match = RE_TIME.search(t_open)
+                close_match = RE_TIME.search(t_close)
+                
+                if not open_match or not close_match: continue
+                
+                open_time_parts = open_match.group(1).replace('H', ':').replace('.', ':').split(':')
+                close_time_parts = close_match.group(1).replace('H', ':').replace('.', ':').split(':')
+                
+                if len(open_time_parts) < 2 or len(close_time_parts) < 2: continue
+                
+                h_o, m_o = int(open_time_parts[0]), int(open_time_parts[1])
+                h_c, m_c = int(close_time_parts[0]), int(close_time_parts[1])
+                
+                dt_start = dt_obj.replace(hour=h_o, minute=m_o)
+                dt_end = dt_obj.replace(hour=h_c, minute=m_c)
+                
+                # Handle overnight shifts
+                if dt_end < dt_start:
+                    dt_end = dt_end + timedelta(days=1)
+                
+                ts_start = dt_start.strftime("%Y%m%dT%H%M%S")
+                ts_end = dt_end.strftime("%Y%m%dT%H%M%S")
+                
+                summary = f"{f.get('Call','')} ({f.get('Route','')})"
+                desc = f"Bay: {f.get('Bay','')}. Type: {f.get('Type','')}"
+
+                # Sanitize fields to prevent formula injection
+                sanitized_summary = sanitize_formula(summary)
+                sanitized_desc = sanitize_formula(desc)
+
+                ical_lines.append("BEGIN:VEVENT")
+                ical_lines.append(f"DTSTART:{ts_start}")
+                ical_lines.append(f"DTEND:{ts_end}")
+                ical_lines.append(f"SUMMARY:{sanitized_summary}")
+                ical_lines.append(f"DESCRIPTION:{sanitized_desc}")
+                ical_lines.append("END:VEVENT")
+                count += 1
+        except Exception as e:
+            print(f"iCal export error for row {r}: {e}")
+            continue
+        
+    ical_lines.append("END:VCALENDAR")
+
+    return "\r\n".join(ical_lines)
+
+
+def generate_csv_content():
+    """Generate .csv content string."""
+    rows = load_history()
+    if not rows:
+        return None
+
+    # Create an in-memory string buffer
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # Write header
+    writer.writerow(["Date", "Shift", "Flight Type", "Callsign", "Route", "Open Time", "Close Time", "Bay", "Names", "Zone"])
+    
+    # Write data rows
+    for r in rows:
+        try:
+            date_str = r['work_date']
+            data = json.loads(r['full_data'])
+            shift = data.get('shift', '')
+            
+            flights = data.get('flights', [])
+            
+            if not flights:
+                # Write a row even if there are no flights
+                writer.writerow([sanitize_formula(field) for field in [
+                    date_str, shift, "", "", "", "", "", "", "", ""
+                ]])
+            else:
+                for f in flights:
+                    writer.writerow([sanitize_formula(field) for field in [
+                        date_str, shift, f.get('Type', ''), f.get('Call', ''), 
+                        f.get('Route', ''), f.get('Open', ''), f.get('Close', ''), 
+                        f.get('Bay', ''), f.get('Names', ''), f.get('Zone', '')
+                    ]])
+        except Exception as e:
+            print(f"CSV export error for row {r}: {e}")
+            continue
+    
+    csv_content = output.getvalue()
+    output.close()
+    return csv_content
+
+# ==========================================
+# 🧹 PARSING HELPERS
+# ==========================================
+
+# ==========================================
+# 🧹 PARSING LOGIC & HEURISTICS
+# ==========================================
+
+# === AGENT CONTRACT ===================================
+# SECTION: INGEST & PARSING
+# INVARIANTS:
+# - File parsing must remain safe from path traversal
+# - Regex patterns must not be tightened without dataset regression
+# - Sheet identification must remain robust to format variations
+# AGENT RULES:
+# - Do NOT change regex patterns without validation
+# - Do NOT remove safe_path validation
+# - Do NOT weaken file format support
+# =======================================================
+# --- PARSER: UTILITIES ---
+_cell_norm_cache = {}
+_cell_norm_cache_lock = threading.Lock()
+
+def norm_cell(cell):
+    """Normalize a cell value by converting to string, uppercasing, and stripping whitespace"""
+    with _cell_norm_cache_lock:
+        if cell not in _cell_norm_cache:
+            _cell_norm_cache[cell] = str(cell).upper().strip()
+        return _cell_norm_cache[cell]
+
+def get_cell_flags(cell):
+    """Classify cell content using bitmask to avoid repeated regex checks."""
+    if not cell: return 0
+    flags = 0
+    s = norm_cell(cell)
+    if RE_ROUTE.match(s): flags |= CELL_ROUTE
+    if RE_TIME_RANGE.search(s): flags |= CELL_TIME
+    if s in ["OFF", "HỌC", "NGHỈ", "PHÉP", "ĐI HỌC", "NGHI", "PHEP"]: flags |= CELL_OFF
+    # We don't check CELL_NAME here as it requires a more expensive check 
+    # and is only used in specific contexts.
+    return flags
+
+def load_excel_file(file_path):
+    """Helper for validation scripts to load the first sheet of an excel file."""
+    workbook = CalamineWorkbook.from_path(file_path)
+    sheet_name = workbook.sheet_names[0]
+    sheet = workbook.get_sheet_by_name(sheet_name)
+    return sheet.to_python()
+
+def is_valid_name_generic(text: str) -> bool:
+    if not text: return False
+    # Normalize newlines and whitespace
+    text = str(text).replace('\n', ' ').strip()
+    if len(text) < 4: return False
+    
+    # Reject digits (Names don't have numbers)
+    if any(char.isdigit() for char in text): return False
+    
+    # Check if mostly letters
+    if not any(ch.isalpha() for ch in text):
+        return False
+
+    # Reject Flight Routes (e.g. HAN-SGN)
+    if RE_ROUTE.match(text.upper()):
+        return False
+    
+    # Exclusion list for metadata masquerading as names
+    blocklist = {
+        "AEROBRIDGE", "PASSENGER", "CHARTER", "CARGO", "COMMERCIAL", "SCHEDULE", "OPERATION",
+        "AIRPORT", "CONTROL", "FLIGHT", "PLAN", "LIST", "FROM", "TO", "REMARK", "STATUS",
+        "ACTUAL", "ESTIMATED", "DEPARTURE", "ARRIVAL", "TOTAL", "PAX", "SEAT", "NOTE",
+        "BẢNG PHÂN CÔNG NHIỆM VỤ"
+    }
+    text_upper = text.upper()
+    
+    # Check exact match or contained keywords
+    if text_upper in blocklist: return False
+    
+    # Check if ANY word is in the blocklist (e.g. "Aerobridge Passenger")
+    if any(w in blocklist for w in text_upper.split()): return False
+    
+    # Check for header-like English sentences
+    # Extended list to catch "FLIGHT PLAN", "DATE" etc.
+    if " " in text and any(x in text_upper for x in ["AIRPORT", "OPERATIONS", "CONTROL", "FLIGHT", "PLAN"]): return False
+    
+    return True
+
+def fuzzy_match_markers(text: str, markers: list, threshold: int = 85) -> int:
+    count = 0
+    text_upper = text.upper()
+    for marker in markers:
+        marker_upper = marker.upper()
+        if marker_upper in text_upper:
+            count += 1
+            continue
+        if fuzz.partial_ratio(text_upper, marker_upper) >= threshold:
+            count += 1
+    return count
+
+def has_flight_route_pattern(rows):
+    for row in rows[:20]:
+        for cell in row:
+            if cell and RE_ROUTE.match(str(cell).strip().upper()):
+                return True
+    return False
+
+def is_clean_flight_sheet(rows: list) -> bool:
+    """
+    Detects 'Clean' Flight Sheets (No assignments) to avoid processing them.
+    Signs:
+    1. Header contains 'SERIAL ... NOTE'
+    2. Columns right of BAY/GATE contain 'Aerobridge', 'Passenger', etc. instead of names.
+    """
+    header_found = False
+    bay_col_idx = -1
+    
+    # 1. Scan headers for clean sheet signature
+    for r_idx, row in enumerate(rows[:15]):
+        row_text = " ".join([str(x or "") for x in row]).upper()
+        if "SERIAL" in row_text and "CALLSIGN" in row_text and ("NOTE" in row_text or "DEP" in row_text or "ARR" in row_text):
+            header_found = True
+            # Find Bay column
+            for c_idx, cell in enumerate(row):
+                c_val = str(cell or "").upper()
+                if c_val in ["BAY", "GATE", "BĂNG"]:
+                    bay_col_idx = c_idx
+                    break
+            break
+    
+    # If explicitly marked as a Flight Plan/Schedule without assignment headers
+    if header_found:
+        clean_keywords = ["AEROBRIDGE", "PASSENGER", "CHARTER", "CARGO", "COMMERCIAL"]
+        keyword_hits = 0
+        scan_rows = rows[5:25] # Check content
+        
+        for row in scan_rows:
+            if bay_col_idx != -1 and bay_col_idx + 1 < len(row):
+                val = str(row[bay_col_idx+1] or "").upper()
+                if any(k in val for k in clean_keywords):
+                    keyword_hits += 1
+            else:
+                # Fallback: simple row scan
+                row_text = " ".join([str(x or "") for x in row]).upper()
+                if any(k in row_text for k in clean_keywords):
+                    keyword_hits += 1
+        
+        if keyword_hits >= 2: return True
+
+    return False
+
+# --- PARSER: SHIFT DETECTION ---
+def identify_shift_sheet_statistical(rows):
+    name_candidates = []
+    # Limit to first 100 rows for analysis
+    for r_idx, row in enumerate(rows[:100]):
+        # Optimization: Limit columns to first 50
+        for c_idx, cell in enumerate(row[:50]):
+            if is_valid_name_generic(cell):
+                name_candidates.append((r_idx, c_idx))
+    
+    if len(name_candidates) < 10: return False, {}
+    
+    time_column_votes = defaultdict(int)
+    workday_count = 0
+    offday_count = 0
+    
+    for r_idx, c_idx in name_candidates:
+        if r_idx >= len(rows): continue
+        row = rows[r_idx]
+        
+        for offset in range(1, 10): # Check +1 to +9
+            check_col = c_idx + offset
+            if check_col >= len(row): continue
+
+            val = str(row[check_col] if row[check_col] else "").strip().upper()
+
+            # Time pattern or Shift Marker
+            if RE_SHIFT_TIME_PATTERN.search(val) or any(x in val for x in ["CA SÁNG", "CA TỐI", "CA SANG", "CA TOI", "CA 1", "CA 2"]):
+                time_column_votes[check_col] += 1
+                workday_count += 1
+            elif val in ["OFF", "HỌC", "NGHỈ", "PHÉP", "ĐI HỌC"]:
+                time_column_votes[check_col] += 1
+                offday_count += 1
+                
+    total = workday_count + offday_count
+    if total < 5: return False, {} 
+    
+    if not time_column_votes: return False, {}
+    
+    dominant_col = max(time_column_votes, key=time_column_votes.get)
+    col_consistency = time_column_votes[dominant_col] / total
+    workday_ratio = workday_count / total
+    
+    stats = {
+        "total": total,
+        "ratio": workday_ratio,
+        "consistency": col_consistency
+    }
+    
+    # Validation rules
+    is_valid = (col_consistency >= 0.50 and workday_ratio >= 0.30)
+    return is_valid, stats
+
+def normalize_time_range(cell):
+    if not cell: return None
+    s = str(cell).upper().strip()
+    match = RE_TIME_RANGE.search(s)
+    if match:
+        return f"{match.group(1)}-{match.group(2)}"
+    return None
+
+def is_day_off_token(cell):
+    if not cell: return False
+    s = str(cell).upper().strip()
+    return s in ["OFF", "HỌC", "NGHỈ", "PHÉP", "ĐI HỌC", "NGHI", "PHEP"]
+
+def is_route_pattern(cell):
+    if not cell: return False
+    s = str(cell).upper().strip()
+    return bool(RE_ROUTE.match(s))
+
+def build_row_signals(rows, max_rows=200):
+    time_counts = defaultdict(int)
+    off_count = 0
+    total_time_entries = 0
+    
+    route_rows = set()
+    name_near_route = set()
+    all_names = defaultdict(int)
+
+    for r_idx, row in enumerate(rows[:max_rows]):
+        for c_idx, cell in enumerate(row):
+            if not cell:
+                continue
+            
+            flags = get_cell_flags(cell)
+
+            # Check for time ranges and off tokens
+            if flags & CELL_TIME:
+                time_range = normalize_time_range(cell)
+                if time_range:
+                    time_counts[time_range] += 1
+                    total_time_entries += 1
+                continue
+
+            if flags & CELL_OFF:
+                off_count += 1
+                
+            # Check for route patterns and collect names near routes
+            if flags & CELL_ROUTE:
+                route_rows.add(r_idx)
+
+                for offset in (-2, -1, 1, 2):
+                    if 0 <= c_idx + offset < len(row):
+                        neighbor = row[c_idx + offset]
+                        if is_valid_name_generic(neighbor):
+                            name_near_route.add(str(neighbor).strip())
+                            all_names[str(neighbor).strip()] += 1
+
+        # Early exit thresholds
+        if total_time_entries >= 10 and off_count >= 10:
+            break
+        if len(route_rows) >= 10 and len(name_near_route) >= 5:
+            break
+
+    return {
+        "time_counts": time_counts,
+        "total_time_entries": total_time_entries,
+        "off_count": off_count,
+        "route_count": len(route_rows),
+        "distinct_names": len(all_names),
+        "name_near_route_count": len(name_near_route),
+        "repeated_names": sum(1 for n in all_names.values() if n > 1),
+    }
+
+def detect_shift_sheet_by_invariants(rows, signals=None):
+    if signals is None:
+        signals = build_row_signals(rows)
+
+    if signals["total_time_entries"] < 4:
+        log_debug("SHIFT_DETECTION_FAILED", {"reason": "too_few_times", "count": signals["total_time_entries"]})
+        return False
+
+    if not signals["time_counts"]:
+        return False
+
+    max_count = max(signals["time_counts"].values()) if signals["time_counts"] else 0
+
+    if max_count < 4:
+        log_debug("SHIFT_DETECTION_FAILED", {"reason": "low_time_clustering", "max_count": max_count})
+        return False
+
+    if signals["off_count"] < 3:
+        log_debug("SHIFT_DETECTION_FAILED", {"reason": "too_few_offs", "off_count": signals["off_count"]})
+        return False
+
+    log_debug("SHIFT_DETECTION_SUCCESS", {"max_count": max_count, "off_count": signals["off_count"]})
+    return True
+
+# --- PARSER: FLIGHT ROW EXTRACTION ---
+
+def detect_flight_personnel_sheet_by_invariants(rows, signals=None):
+    if signals is None:
+        signals = build_row_signals(rows)
+
+    if signals["route_count"] < 3:
+        log_debug("FLIGHT_DETECTION_FAILED", {"reason": "too_few_routes", "count": signals["route_count"]})
+        return False
+
+    if signals["name_near_route_count"] < 2:
+        log_debug("FLIGHT_DETECTION_FAILED", {"reason": "too_few_names_near_routes", "count": signals["name_near_route_count"]})
+        return False
+
+    if signals["distinct_names"] < 2:
+        log_debug("FLIGHT_DETECTION_FAILED", {"reason": "too_few_distinct_names", "count": signals["distinct_names"]})
+        return False
+
+    log_debug("FLIGHT_DETECTION_SUCCESS", signals)
+    return True
+
+def _windowed_flight_scan(rows, window_size=25, step=10):
+    """
+    v6 PATCH:
+    Detect flight tables embedded inside mixed sheets.
+    Looks for dense route/callsign clusters.
+    """
+
+    total_rows = len(rows)
+
+    for start in range(0, total_rows, step):
+        window = rows[start:start + window_size]
+
+        route_hits = 0
+        callsign_hits = 0
+
+        for r in window:
+            for cell in r:
+                if not cell:
+                    continue
+
+                text = str(cell).upper()
+
+                # simple aviation heuristics
+                if "-" in text and len(text) <= 10:
+                    route_hits += 1
+
+                if text[:2].isalpha() and text[2:].isdigit():
+                    callsign_hits += 1
+
+        if route_hits >= 6 and callsign_hits >= 4:
+            return True
+
+    return False
+
+# --- PARSER: SHEET IDENTIFICATION ---
+def identify_sheet_type(rows, sheet_name=""):
+    if not rows: return "SKIP"
+
+    # ==============================
+    # v6 PATCH — FLIGHT HEADER OVERRIDE
+    # Detect obvious flight tables early (CSV-safe)
+    # ==============================
+
+    try:
+        preview_rows = rows[:12]
+        header_preview = " ".join(
+            " ".join(str(c or "") for c in r[:20])
+            for r in preview_rows
+        ).upper()
+
+        flight_header_hits = sum([
+            "CALLSIGN" in header_preview,
+            "ROUTE" in header_preview,
+            "DEP" in header_preview or "ETD" in header_preview,
+            "ARR" in header_preview or "ETA" in header_preview,
+        ])
+
+        # strong signal → force FLIGHT classification
+        if flight_header_hits >= 2:
+            return "FLIGHT"
+
+    except Exception:
+        pass
+
+    # Call build_row_signals once and pass the resulting signals to both detection functions
+    signals = build_row_signals(rows)
+    
+    # ==============================
+    # v6 PATCH — WINDOWED FLIGHT DETECTION
+    # Handles mixed shift + flight sheets
+    # ==============================
+
+    if _windowed_flight_scan(rows):
+        return "FLIGHT"
+
+    # ==============================
+    # v6 PATCH — PRIORITIZE FLIGHT
+    # Flight structure is more specific than shift patterns
+    # ==============================
+
+    if detect_flight_personnel_sheet_by_invariants(rows, signals):
+        return "FLIGHT"
+
+    if detect_shift_sheet_by_invariants(rows, signals):
+        return "SHIFT"
+
+    # EARLY EXIT — pre-scan already decisive
+    if signals.get("route_count", 0) >= 3:
+        return "FLIGHT"
+    if signals.get("total_time_entries", 0) >= 10:
+        return "SHIFT"
+
+    # fallback to existing logic
+    return identify_sheet_type_legacy(rows, sheet_name)
+
+def identify_sheet_type_legacy(rows, sheet_name=""):
+    """
+    Strict Identification Matrix (v5.6):
+    - Shift: "LỊCH LÀM VIỆC ĐỘI VỆ SINH" + NOT "BẢNG PHÂN CÔNG NHIỆM VỤ"
+    - Flight: Sheet "PVHL" + "SERIAL/CALLSIGN/ROUTE" markers
+    """
+    if not rows: return "SKIP"
+    
+    header_text = ""
+    # Optimization: Limit columns to avoid wide-sheet performance hit
+    for row in rows[:15]:
+        header_text += " ".join([str(c or "") for c in row[:50]]).upper() + " "
+
+    # 1. SHIFT SHEET DETECTION (Strict)
+    is_shift_header = "LỊCH LÀM VIỆC" in header_text or "LỊCH THỰC TẬP" in header_text or "DANH SÁCH" in header_text or "LỊCH PHÂN CA" in header_text or "TÊN CA MÃ CA" in header_text or "HỌ VÀ TÊN NV" in header_text or "MÃ CA" in header_text.upper()
+    is_ghost = "BẢNG PHÂN CÔNG NHIỆM VỤ" in header_text
+    
+    if is_shift_header and not is_ghost:
+        return "SHIFT"
+
+    # 2. FLIGHT SHEET DETECTION (Strict)
+    flight_markers = ["SERIAL", "CALLSIGN", "ROUTE"]
+    found_flight_markers = sum(1 for m in flight_markers if m in header_text)
+    
+    # Flight sheet usually named PVHL or LICH BAY and has the columns
+    is_flight_sheet_name = sheet_name.upper() in ["PVHL", "LICH BAY", "LỊCH BAY"]
+    
+    if (is_flight_sheet_name or "TRỰC CHẤT XẾP" in header_text) and found_flight_markers >= 2:
+        # Check if it's a clean schedule or a roster
+        if is_clean_flight_sheet(rows):
+            return "SKIP"
+        return "FLIGHT"
+
+    # 3. SECONDARY SHIFT DETECTION (For secondary team sheets like PVHL-Shift)
+    is_secondary_marker = "BẢNG PHÂN CÔNG CA LÀM VIỆC" in header_text or "CA SÁNG" in header_text or "CA TỐI" in header_text or "CA SANG" in header_text or "CA TOI" in header_text
+    
+    if is_secondary_marker and not is_ghost:
+        # Verify names/times exist to be sure
+        is_stat_shift, _ = identify_shift_sheet_statistical(rows)
+        if is_stat_shift:
+            return "SHIFT"
+
+    # 4. LEGACY FALLBACKS
+    # Limit text length for fuzzy matching to ensure performance
+    header_limited = header_text[:2000]
+    req_matches = fuzzy_match_markers(header_limited, SHIFT_SHEET_MARKERS["required"])
+    if req_matches >= 1 and not is_ghost:
+        return "SHIFT"
+        
+    return "SKIP"
+
+# --- PARSER: NAME NORMALIZATION ---
+def normalize_text(text: str) -> str:
+    if text is None: return ""
+    text = str(text)
+    if text.endswith('.0'): text = text[:-2] 
+    return unicodedata.normalize('NFC', text).strip()
+
+def clean_val(val):
+    if val is None: return ""
+    s = str(val).strip()
+    if s.endswith(".0"): return s[:-2]
+    if s.lower() == 'nan': return ""
+    return s
+
+def clean_time(t_str: str) -> str:
+    if not t_str: return ""
+    t_str = t_str.upper().replace("H", ":").replace(".", ":").replace("G", ":").strip()
+    range_match = RE_TIME_RANGE.search(t_str)
+    if range_match:
+        # Simplify groups to HH:MM format
+        try:
+            start = RE_TIME.search(range_match.group(1)).group(1)
+            end = RE_TIME.search(range_match.group(2)).group(1)
+            return f"{start} - {end}"
+        except (AttributeError, IndexError):
+            return t_str
+    match = RE_TIME.search(t_str)
+    if match:
+        return match.group(1)
+    return t_str
+
+def compile_alias_regex(aliases):
+    """Combine all aliases into one optimized regex for matching."""
+    clean_aliases = [normalize_text(a).strip() for a in aliases if normalize_text(a).strip()]
+    if not clean_aliases: return None
+    # Sort by length desc to ensure longest match is preferred
+    clean_aliases.sort(key=len, reverse=True)
+    
+    # Boundary characters (Vietnamese + Alphanumeric)
+    chars = "a-zA-Z0-9àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ"
+    boundary_start = f"(?:^|[^{chars}])"
+    boundary_end = f"(?:$|[^{chars}])"
+    
+    pattern = boundary_start + r"(" + "|".join(map(re.escape, clean_aliases)) + r")" + boundary_end
+    return re.compile(pattern, re.IGNORECASE)
+
+def check_name_match(cell_content, alias_regex):
+    if not cell_content or not alias_regex: return False
+    cell_text = normalize_text(cell_content)
+    return bool(alias_regex.search(cell_text))
+
+def is_valid_route(s):
+    s = str(s).strip().upper()
+    return bool(RE_ROUTE.match(s))
+
+def extract_date_smart(rows, filename):
+    # Strategy 1: ISO Date scan (YYYY-MM-DD) for sheets like 'mã ca'
+    RE_ISO_DATE = re.compile(r'(\d{4})-(\d{2})-(\d{2})')
+    for row in rows[:15]:
+        for val in row[:50]:
+            val_str = str(val) if val else ""
+            iso_match = RE_ISO_DATE.search(val_str)
+            if iso_match:
+                # Convert YYYY-MM-DD to DD.MM.YYYY
+                y, m, d = iso_match.groups()
+                d_str = f"{d}.{m}.{y}"
+                if is_valid_roster_year(d_str):
+                    return normalize_date_str(d_str)
+
+    # Strategy 1.5: English Header Scan
+    for row in rows[:15]:
+        row_str = " ".join([str(x) for x in row[:50] if x]).upper()
+        en_match = RE_ENGLISH_DATE_PATTERN.search(row_str)
+        if en_match:
+            day, mon, year = en_match.groups()
+            mon_num = ENGLISH_MONTHS.get(mon[:3].upper())
+            if mon_num:
+                d_str = f"{day}.{mon_num}.{year}"
+                if is_valid_roster_year(d_str):
+                    return normalize_date_str(d_str)
+
+    # Strategy 2: Header scan
+    for row in rows[:10]:
+        # Optimization: Limit columns to first 50
+        row_str = " ".join([str(x) for x in row[:50] if x]).upper()
+        match = RE_HEADER_DATE_PATTERN.search(row_str)
+        if match:
+            d_str = match.group(1)
+            if is_valid_roster_year(d_str):
+                return normalize_date_str(d_str)
+            
+    # Strategy 3: Cell scan
+    for row in rows[:5]:
+        # Optimization: Limit columns to first 50
+        for val in row[:50]:
+            val_str = str(val) if val else ""
+            matches = RE_DATE.findall(val_str)
+            if matches:
+                for m in matches:
+                    if is_valid_roster_year(m):
+                        return normalize_date_str(m)
+
+    # Strategy 4: Filename (Fallback only)
+    match = RE_DATE.search(filename)
+    if match:
+        d_str = match.group(1)
+        if is_valid_roster_year(d_str):
+            return normalize_date_str(d_str)
+                
+    return "Unknown"
+
+# ==========================================
+# 🚀 CORE LOGIC ENGINE (v4.2)
+# ==========================================
+def parse_row_items(row_raw):
+    # Keep empty cells to preserve column offsets for proximity detection
+    return [clean_val(x) for x in row_raw[:50]]
+
+def find_name_index_in_list(clean_items, alias_regex):
+    for i, item in enumerate(clean_items):
+        if check_name_match(item, alias_regex):
+            return i
+    return -1
+
+def process_row_content_v2(clean_items, name_idx, alias_regex=None, inside_cols=None, shift_col=None, is_maca=False):
+    """
+    Logic A: Shift Scanning (Hybrid Anchor / Strict Mapping)
+    Logic B: Flight Scanning (Route-Centric + Multi-Zone)
+    """
+    if not clean_items: return None
+
+    # Logic A: Shift Scanning
+    has_route = any(is_valid_route(x) for x in clean_items)
+    
+    if name_idx != -1 and not has_route:
+        # STRICT MODE: Use shift_col if provided (Anchor-based)
+        if shift_col is not None and shift_col < len(clean_items):
+            item = clean_items[shift_col]
+            v_upper = str(item or "").upper()
+            
+            # Time Range
+            if RE_TIME_RANGE.search(v_upper):
+                return {'type': 'shift', 'data': clean_time(item)}
+            # Keyword
+            if "HỌC" in v_upper: return {'type': 'shift', 'data': 'HỌC'}
+            if v_upper in ["OFF", "NGHỈ", "PHÉP"]: return {'type': 'shift', 'data': v_upper}
+            # Fallback: if anchor column is empty, don't return OFF yet, try proximity
+
+        # LEGACY/PROXIMITY FALLBACK: Restrict to 10 cells
+        right_side_items = clean_items[name_idx+1 : name_idx+11]
+
+        # Weak Anchor: Time Range (Priority)
+        for item in right_side_items:
+            if RE_TIME_RANGE.search(str(item)):
+                return {'type': 'shift', 'data': clean_time(item)}
+
+        # Weak Anchor: Keyword
+        for item in right_side_items:
+            v_upper = str(item).upper()
+            if "HỌC" in v_upper: return {'type': 'shift', 'data': 'HỌC'}
+            if v_upper in ["OFF", "NGHỈ", "PHÉP"]: return {'type': 'shift', 'data': v_upper}
+
+        # Strong Anchor: Phone (Restricted range)
+        # ONLY return OFF if no time was found in the range
+        has_phone = any(RE_PHONE.match(str(x).replace(".", "").replace(" ", "")) for x in right_side_items)
+        if has_phone:
+            return {'type': 'shift', 'data': 'OFF'}
+            
+        # Strict Column Fallback (if we had a shift_col but it was empty)
+        if shift_col is not None and shift_col < len(clean_items):
+             if not clean_val(clean_items[shift_col]):
+                 return {'type': 'shift', 'data': 'OFF'}
+        
+        # MÃ CA sheet logic: if name is found but no time/phone, it's likely OFF in this simple list
+        if is_maca:
+            # Check if all other cells in row are empty
+            other_cells = [x for i, x in enumerate(clean_items) if i != name_idx and x]
+            if not other_cells:
+                return {'type': 'shift', 'data': 'OFF'}
+
+    # Logic B: Flight Logic (Anchor-Centric Multi-Zone)
+    route_idx = -1
+    for i, item in enumerate(clean_items):
+        if is_valid_route(item):
+            route_idx = i
+            break
+            
+    if route_idx != -1:
+        call_val = clean_items[route_idx - 1] if route_idx > 0 else ""
+        type_val = clean_items[route_idx - 2] if route_idx > 1 else ""
+        
+        # Find Anchor (Bay or Close Time)
+        anchor_idx = -1
+        # Scan forward from route to find times and bay
+        for i in range(route_idx + 1, len(clean_items)):
+            val = clean_items[i]
+            # Time pattern
+            if RE_TIME.search(val):
+                anchor_idx = i
+            # Bay pattern (short, follows time) - Must be non-empty (v5.8)
+            if val and len(val) <= 4 and anchor_idx != -1:
+                anchor_idx = i
+                break # Bay is the strongest anchor
+        
+        if anchor_idx == -1: anchor_idx = route_idx # Fallback
+
+        # Extract metadata relative to anchor once per row
+        times_found = []
+        for i in range(anchor_idx, route_idx, -1):
+            if RE_TIME.search(clean_items[i]):
+                times_found.append(clean_time(clean_items[i]))
+        
+        row_close = times_found[0] if len(times_found) >= 1 else ''
+        row_open = times_found[1] if len(times_found) >= 2 else ''
+        row_bay = ''
+        anchor_val = clean_items[anchor_idx] if anchor_idx < len(clean_items) else ""
+        if anchor_val and len(anchor_val) <= 4 and not RE_TIME.search(anchor_val):
+            row_bay = anchor_val
+
+        # REFINED CAPTURE (v5.8): Priority given to inside_cols if provided
+        found_flights = []
+        
+        if inside_cols:
+            # STRICT MODE: Only check identified Băng Chuyền columns
+            for col_idx in inside_cols:
+                if col_idx < len(clean_items):
+                    cand = clean_items[col_idx]
+                    if check_name_match(cand, alias_regex):
+                        f_data = {
+                            'Type': type_val, 'Call': call_val, 'Route': clean_items[route_idx],
+                            'Open': row_open, 'Close': row_close, 'Bay': row_bay,
+                            'Names': cand, 'Zone': 'Băng chuyền'
+                        }
+                        found_flights.append(f_data)
+            
+            if found_flights:
+                return {'type': 'flight_list', 'data': found_flights}
+            
+            # If we are in strict mode and didn't find the name in inside_cols, 
+            # we should NOT return anything, UNLESS this is an outbound probe (name_idx == -1)
+            if name_idx == -1:
+                f_data = {
+                    'Type': type_val, 'Call': call_val, 'Route': clean_items[route_idx],
+                    'Open': row_open, 'Close': row_close, 'Bay': row_bay, 'Names': '', 'Zone': ''
+                }
+                return {'type': 'flight', 'data': f_data}
+            
+            return None # Ignore the "Noise" in other columns (Sân Đỗ, Gate)
+            
+        else:
+            # LEGACY PROXIMITY MODE
+            for offset in range(1, 5): # Check next 4 items
+                idx = anchor_idx + offset
+                if idx >= len(clean_items): break
+                
+                cand = clean_items[idx]
+                is_match = check_name_match(cand, alias_regex) if alias_regex else is_valid_name_generic(cand)
+                
+                if is_match:
+                    zone = "Băng chuyền" if offset == 1 else "Sân đỗ"
+                    f_data = {
+                        'Type': type_val, 'Call': call_val, 'Route': clean_items[route_idx],
+                        'Open': row_open, 'Close': row_close, 'Bay': row_bay,
+                        'Names': cand, 'Zone': zone
+                    }
+                    found_flights.append(f_data)
+            
+            if found_flights:
+                return {'type': 'flight_list', 'data': found_flights}
+            
+            # Legacy Fallback (Potential Noise)
+            f_data = {
+                'Type': type_val, 'Call': call_val, 'Route': clean_items[route_idx],
+                'Open': row_open, 'Close': row_close, 'Bay': row_bay, 'Names': '', 'Zone': ''
+            }
+            if name_idx != -1 and name_idx < len(clean_items):
+                f_data['Names'] = clean_items[name_idx]
+                return {'type': 'flight', 'data': f_data}
+            elif name_idx == -1:
+                return {'type': 'flight', 'data': f_data}
+
+    return None
+
+def find_header_mapping(rows):
+    """
+    Scans first 20 rows to find the header row and map critical columns.
+    Returns: (row_index, mapping_dict)
+    mapping: { 'name': idx, 'id': idx, 'shift': idx, 'phone': idx }
+    """
+    TARGET_KEYWORDS = {
+        "name": ["HỌ VÀ TÊN", "HO VA TEN", "TÊN NHÂN VIÊN", "FULLNAME", "HỌ TÊN"],
+        "id": ["MÃ NV", "MA NV", "MANV", "ID", "MÃ SỐ"],
+        "shift": ["CA LÀM VIỆC", "TÊN CA", "MÃ CA", "SHIFT", "CA"],
+        "phone": ["SĐT", "SỐ ĐIỆN THOẠI", "PHONE", "MOBILE", "TELEPHONE"]
+    }
+    
+    best_row_idx = -1
+    best_score = 0
+    final_mapping = {}
+
+    for r_idx in range(min(20, len(rows))):
+        row = [str(c or "").strip().upper() for c in rows[r_idx]]
+        current_mapping = {}
+        score = 0
+        
+        for key, keywords in TARGET_KEYWORDS.items():
+            for c_idx, cell in enumerate(row):
+                if any(kw in cell for kw in keywords):
+                    current_mapping[key] = c_idx
+                    score += 1
+                    break # Found this key for this row
+        
+        if score > best_score:
+            best_score = score
+            best_row_idx = r_idx
+            final_mapping = current_mapping
+            
+    return best_row_idx, final_mapping
+
+def process_sheet_v3(rows, alias_regex, date_str, filename, sheet_obj=None):
+    """
+    Logic C: Zone Detection (Row-based)
+    Logic: Ghost Buster implementation
+    """
+    global _cell_norm_cache
+    with _cell_norm_cache_lock:
+        _cell_norm_cache.clear()
+
+    result = {"date": date_str, "shift": None, "flights": []}
+    row_count = len(rows)
+    processed_indices = set()
+
+    current_zone = ""
+    ZONE_SEQUENCE = ["SÂN ĐỖ", "BĂNG CHUYỀN", "TRẢ HÀNH LÝ"]
+    zone_sequence_idx = 0
+    last_start_hour = -1
+    active_ca_type = None
+    last_active_ca_type = None
+    
+    # 1. Statistical Header Discovery (v5.9)
+    header_row_idx, col_mapping = find_header_mapping(rows)
+    shift_col = col_mapping.get('shift')
+    
+    # 1.1 Sheet-level Identification for VS-BX (v5.9)
+    sheet_header_text = ""
+    for row in rows[:15]:
+        sheet_header_text += " ".join([norm_cell(c or "") for c in row[:50]]) + " "
+
+    is_vsbx = "VỆ SINH" in sheet_header_text or "VS-BX" in sheet_header_text
+    is_maca = sheet_obj and "MÃ CA" in norm_cell(sheet_obj)
+
+    # Header Mapping (v5.8) - Still used for Flight Zone strict filtering
+    inside_cols = []
+    outside_cols = []
+    header_found = False
+
+    for r_idx in range(row_count):
+        if r_idx in processed_indices: continue
+        row = rows[r_idx]
+        items_curr = parse_row_items(row)
+        
+        # Optimization: Reduce per-row string churn
+        cells_upper = [norm_cell(x) for x in items_curr if x]
+
+        def row_has(substr):
+            return any(substr in cell for cell in cells_upper)
+        
+        # 2. Dynamic Header Detection (Once per sheet) - Legacy Flight Logic Support
+        if not header_found and row_has("SERIAL") and row_has("CALLSIGN"):
+            for c_idx, cell in enumerate(items_curr):
+                c_val = norm_cell(cell or "")
+                if any(x in c_val for x in ["HL ĐI", "HÀNH LÝ ĐI", "TRẢ HL ĐẾN", "QUÁ KHỔ", "CHẤT XẾP HL"]):
+                    inside_cols.append(c_idx)
+                elif any(x in c_val for x in ["SÂN ĐỖ", "CẢNH GIỚI", "XI NHAN", "TÀU BAY"]):
+                    outside_cols.append(c_idx)
+            header_found = True
+            continue 
+
+        # [ ... Zone Switching Logic omitted for brevity, keeping existing ... ]
+        # [ I will use multiple replace calls if needed, but for now assuming I can replace the whole loop body or carefully target ]
+
+
+        # 2. Zone Switching Logic (Row-based detection)
+        found_explicit_zone = False
+        if row_has("SÂN ĐỖ") or row_has("SAN DO"):
+            current_zone = "SÂN ĐỖ"
+            zone_sequence_idx = 0
+            found_explicit_zone = True
+            last_start_hour = -1
+            active_ca_type = None
+            last_active_ca_type = None
+        elif row_has("BĂNG CHUYỀN") or row_has("BANG CHUYEN"):
+            current_zone = "BĂNG CHUYỀN"
+            zone_sequence_idx = 1
+            found_explicit_zone = True
+            last_start_hour = -1
+            active_ca_type = None
+            last_active_ca_type = None
+        elif row_has("TRẢ HÀNH LÝ") or row_has("TRA HANH LY"):
+            current_zone = "TRẢ HÀNH LÝ"
+            zone_sequence_idx = 2
+            found_explicit_zone = True
+            last_start_hour = -1
+            active_ca_type = None
+            last_active_ca_type = None
+
+        # Identify current shift type (SANG/TOI) from row markers
+        if row_has("CA SÁNG") or row_has("CA SANG") or row_has("CA 1"):
+            active_ca_type = "SANG"
+        elif row_has("CA TỐI") or row_has("CA TOI") or row_has("CA 2"):
+            active_ca_type = "TOI"
+
+        # 3. Row Parsing & Zone Tracking (Runs for every row)
+        # Identify if this is a shift row for zone tracking (ANY name)
+        any_name_idx = -1
+        for i, item in enumerate(items_curr):
+            if is_valid_name_generic(item):
+                any_name_idx = i
+                break
+        
+        if any_name_idx != -1:
+            has_phone_any = any(RE_PHONE.match(x.replace(".", "").replace(" ", "")) for x in items_curr)
+            has_id_any = any(RE_ID6.match(x) for x in items_curr)
+            
+            if has_phone_any or has_id_any or is_vsbx or is_maca:
+                res_any = process_row_content_v2(items_curr, any_name_idx, shift_col=shift_col, is_maca=is_maca)
+                if res_any and res_any['type'] == 'shift':
+                    final_shift_any = res_any['data']
+                    if final_shift_any not in ["OFF", "HỌC"]:
+                        try:
+                            # Extract HH from HH:MM or HHhMM
+                            h_str = final_shift_any[:2].replace(":", "").replace("H", "").strip()
+                            if h_str.isdigit():
+                                current_start_hour = int(h_str)
+                                if last_start_hour != -1:
+                                    # REFINED RESET LOGIC (v5.7)
+                                    is_ca_reset = (last_active_ca_type in ["TOI", "LO"] and active_ca_type == "SANG")
+                                    is_late_reset = (last_start_hour >= 11 and current_start_hour <= 9)
+                                    is_hint_reset = (current_start_hour < last_start_hour - 3 and active_ca_type == "SANG")
+                                    
+                                    # Gate: Transition from None to SANG with time drop is usually Supervisor->Worker, NOT a zone reset
+                                    if last_active_ca_type is None and active_ca_type == "SANG":
+                                        is_real_reset = False
+                                    else:
+                                        is_real_reset = is_ca_reset or is_late_reset or is_hint_reset
+
+                                    if is_real_reset:
+                                        # Time/Marker Reset detected! Switch to next zone.
+                                        zone_sequence_idx = min(zone_sequence_idx + 1, len(ZONE_SEQUENCE) - 1)
+                                        # Reset trackers to avoid multiple resets for the same transition
+                                        last_start_hour = -1
+                                        last_active_ca_type = None
+                                
+                                last_start_hour = current_start_hour
+                                last_active_ca_type = active_ca_type
+                        except Exception as e:
+                            # Redact sensitive data before logging
+                            log_data = redact_sensitive_data({
+                                'error': str(e), 
+                                'function': 'process_sheet_v3', 
+                                'operation': 'time_parsing',
+                                'type': type(e).__name__,
+                                'location': 'process_sheet_v3.time_parsing'
+                            })
+                            log_debug('runtime_error', log_data)
+
+        # Apply fallback zone if no explicit header was found in THIS row
+        if not found_explicit_zone and zone_sequence_idx < len(ZONE_SEQUENCE):
+            current_zone = ZONE_SEQUENCE[zone_sequence_idx]
+
+        # 4. Target User Matching
+        name_idx_curr = find_name_index_in_list(items_curr, alias_regex)
+        if name_idx_curr == -1: continue
+        
+        has_phone = any(RE_PHONE.match(x.replace(".", "").replace(" ", "")) for x in items_curr)
+        has_id = any(RE_ID6.match(x) for x in items_curr)
+        
+        # Pass inside_cols to enable strict filtering (v5.8)
+        res_curr = process_row_content_v2(items_curr, name_idx_curr, alias_regex, inside_cols=inside_cols, shift_col=shift_col, is_maca=is_maca)
+        
+        if res_curr:
+            if res_curr['type'] == 'shift':
+                # Ghost Buster: Must have Phone OR ID to be a valid shift row (RELAXED for VS-BX/MÃ CA)
+                if has_phone or has_id or is_vsbx or is_maca:
+                    final_shift = res_curr['data']
+                    if current_zone and final_shift != "OFF" and final_shift != "HỌC":
+                        final_shift = f"{final_shift} ({current_zone})"
+                    result['shift'] = final_shift
+
+            elif res_curr['type'] in ['flight', 'flight_list']:
+                # Handle single or multiple flights from one row
+                found_flights = res_curr['data'] if res_curr['type'] == 'flight_list' else [res_curr['data']]
+                
+                # Check next row for Outbound leg (shared for all names in this flight)
+                outbound = None
+                next_r = r_idx + 1
+                if next_r < row_count:
+                    row_next = rows[next_r]
+                    items_next = parse_row_items(row_next)
+                    # Use -1 to indicate an outbound probe scan
+                    res_next = process_row_content_v2(items_next, -1, alias_regex, inside_cols=inside_cols, is_maca=is_maca)
+                    if res_next and res_next['type'] in ['flight', 'flight_list']:
+                        # Use first entry from next row as outbound details
+                        outbound = res_next['data'][0] if res_next['type'] == 'flight_list' else res_next['data']
+                        processed_indices.add(next_r)
+                
+                for final_flight in found_flights:
+                    if outbound:
+                        final_flight['Call'] = outbound['Call']
+                        final_flight['Route'] = outbound['Route']
+                    
+                    result['flights'].append(final_flight)
+
+    return result
+
+def process_file_content(content, filename, alias_regex):
+    file_stream = io.BytesIO(content)
+    return process_file_stream(file_stream, filename, alias_regex)
+
+def parse_file(file_stream, filename, alias_regex):
+    processed_data = []
+
+    def process_one_sheet_data(sheet_name_rows_tuple):
+        sheet_name, rows = sheet_name_rows_tuple
+        t_sheet = time.monotonic()
+
+        t_detect = time.monotonic()
+        sheet_type = identify_sheet_type(rows, sheet_name or "LỊCH BAY")
+        detect_time = time.monotonic() - t_detect
+
+        if sheet_type == "SKIP":
+            return None
+
+        t_date = time.monotonic()
+        date_str = extract_date_smart(rows, filename)
+        date_time = time.monotonic() - t_date
+
+        if date_str == "Unknown":
+            return None
+
+        t_parse = time.monotonic()
+        sheet_result = process_sheet_v3(rows, alias_regex, date_str, filename, sheet_name)
+        parse_time = time.monotonic() - t_parse
+
+        total_sheet_time = time.monotonic() - t_sheet
+        if DEBUG_ENABLED:
+            log_debug('TIMING_INGEST', {
+                'file': filename,
+                'sheet': sheet_name,
+                'type': sheet_type,
+                'detect': detect_time,
+                'date': date_time,
+                'parse': parse_time,
+                'total': total_sheet_time
+            })
+
+        if sheet_result['shift'] or sheet_result['flights']:
+            return sheet_result
+        return None
+
+    try:
+        if filename.endswith('.csv'):
+            text_stream = io.TextIOWrapper(file_stream, encoding='utf-8-sig', errors='replace')
+            reader = csv.reader(text_stream)
+            rows = list(reader)
+            sheet_type = identify_sheet_type(rows, "LỊCH BAY")
+            if sheet_type != "SKIP":
+                date_str = extract_date_smart(rows, filename)
+                if date_str != "Unknown":
+                    sheet_result = process_sheet_v3(rows, alias_regex, date_str, filename)
+                    if sheet_result['shift'] or sheet_result['flights']:
+                        processed_data.append(sheet_result)
+        else:
+            # Use python_calamine for significantly faster processing
+            t0 = time.monotonic()
+            workbook = CalamineWorkbook.from_filelike(file_stream)
+            load_time = time.monotonic() - t0
+            if DEBUG_ENABLED:
+                log_debug('TIMING_INGEST', {'file': filename, 'operation': 'load_workbook', 'elapsed': load_time})
+
+            # Sequentially read all sheets into memory to avoid 'Already borrowed' error
+            sheets_data = []
+            for sheet_name in workbook.sheet_names:
+                sheet = workbook.get_sheet_by_name(sheet_name)
+                rows = sheet.to_python()
+                sheets_data.append((sheet_name, rows))
+
+            # Process sheets concurrently using pre-loaded rows
+            max_workers = min(3, os.cpu_count() or 1)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                results = executor.map(process_one_sheet_data, sheets_data)
+
+            # Collect non-None results
+            for result in results:
+                if result is not None:
+                    processed_data.append(result)
+    except Exception as e:
+        return None, str(e)
+
+    return processed_data, None
+
+def process_file_stream(file_stream, filename, alias_regex):
+    debug_log(f"process_file_stream called with filename='{filename}', alias_regex pattern count={len(alias_regex.pattern) if alias_regex else 0}", "PARSER")
+    result = parse_file(file_stream, filename, alias_regex)
+    debug_log(f"process_file_stream completed, result type: {type(result)}, first element type: {type(result[0]) if result and isinstance(result, list) and result else 'N/A'}", "PARSER")
+    return result
+
+# Alias the function to maintain backward compatibility
+# process_file_stream = parse_file
+
+def consolidate_file_results(results):
+    """
+    Consolidates multiple sheets/blocks found in one file.
+    Does not merge with DB yet.
+    """
+    merged = {}
+    for res in results:
+        d_str = res['date']
+        if d_str not in merged:
+            merged[d_str] = res
+        else:
+            existing = merged[d_str]
+            new_shift = res.get('shift')
+            if new_shift and new_shift not in ['OFF', None, '']:
+                existing['shift'] = new_shift
+            
+            existing_calls = {f['Call'] for f in existing.get('flights', [])}
+            for f in res.get('flights', []):
+                if f['Call'] not in existing_calls:
+                    existing['flights'].append(f)
+                    existing_calls.add(f['Call'])
+    return merged.values()
+
+
+# ==========================================
+# 🔄 INGEST & ALIASES
+# ==========================================
+
+def get_aliases():
+    alias_file = "v42_aliases.txt"
+    if os.path.exists(alias_file):
+        with open(alias_file, 'r', encoding='utf-8') as f: aliases = f.read()
+    else:
+        aliases = "Ấn, ẨN, Ẩn, Nguyễn Ngọc Ấn, NGỌC ẤN, Nguyễn Ngọc Ẩn, NGỌC ẨN"
+    return [x.strip() for x in aliases.split(",")]
+
+def _run_ingest_once():
+    INGEST_RUNNING.set()
+    try:
+        if not os.path.exists(AUTO_INGEST_DIR):
+            update_status("Idle", "Monitoring folder...")
+            return
+
+        files = glob.glob(os.path.join(AUTO_INGEST_DIR, "*"))
+        safe_files = []
+        for f in files:
+            try:
+                safe_path(AUTO_INGEST_DIR, f)
+                safe_files.append(f)
+            except ValueError:
+                continue
+
+        target_files = [
+            f for f in safe_files
+            if f.lower().endswith(('.xlsx', '.csv', '.xls'))
+        ]
+
+        if not target_files:
+            update_status("Idle", "Monitoring folder...")
+            return
+
+        count = 0
+        target_files.sort()
+        batch_files = target_files[:5]
+        update_status("Processing", f"Importing {len(batch_files)} files.")
+
+        aliases = get_aliases()
+        alias_regex = compile_alias_regex(aliases)
+
+        def _background_parse(f_path, regex):
+            try:
+                safe_f_path = safe_path(AUTO_INGEST_DIR, f_path)
+                if not os.path.exists(safe_f_path):
+                    return (f_path, None, "MISSING")
+                with open(safe_f_path, 'rb') as f:
+                    p_results, p_err = process_file_stream(
+                        f, os.path.basename(f_path), regex
+                    )
+                return (f_path, p_results, p_err)
+            except Exception as ex:
+                log_debug(
+                    "parse_failed",
+                    {"file": os.path.basename(f_path), "error": str(ex)}
+                )
+                return (f_path, None, str(ex))
+
+        results_list = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(_background_parse, fp, alias_regex)
+                for fp in batch_files
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                results_list.append(future.result())
+
+        for f_path_res, results, err in results_list:
+            try:
+                safe_file = safe_path(AUTO_INGEST_DIR, f_path_res)
+                if err == "MISSING":
+                    continue
+                if results:
+                    final = consolidate_file_results(results)
+                    save_entries_bulk(final)
+                    count += 1
+                    if os.path.exists(safe_file):
+                        os.remove(safe_file)
+                elif err:
+                    if os.path.exists(safe_file):
+                        os.rename(safe_file, safe_file + ".error")
+                else:
+                    if os.path.exists(safe_file):
+                        os.rename(safe_file, safe_file + ".nodate")
+            except Exception as e:
+                log_debug("file_loop_error", {"file": f_path_res, "error": str(e)})
+
+        if count > 0:
+            update_status("Idle", f"Last run: Processed {count} files")
+        else:
+            update_status("Idle", "Monitoring folder...")
+
+    finally:
+        INGEST_RUNNING.clear()
+        update_status("Idle", "Sẵn sàng")
+
+def run_auto_ingest():
+    """Background task to watch folder for new files."""
+    UI_CONNECTED.wait()
+    while not SHUTDOWN_EVENT.is_set():
+        if INGEST_RUNNING.is_set():
+            time.sleep(INGEST_INTERVAL)
+            continue
+
+        INGEST_RUNNING.set()
+        try:
+            _run_ingest_once()
+        except Exception as e:
+            log_debug("auto_ingest_error", str(e))
+            update_status("Error", str(e))
+        finally:
+            INGEST_RUNNING.clear()
+            bump_db_rev()
+
+        time.sleep(INGEST_INTERVAL)
+
+# ==========================================
+# 🖥️ UI (NiceGUI)
+# ==========================================
+
+ui.add_head_html('''
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+    body { 
+        font-family: 'Inter', -apple-system, sans-serif; 
+        background-color: #f1f5f9;
+        overflow-x: hidden; 
+    }
+    .shiny-card {
+        background: white;
+        border-radius: 12px;
+        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        position: relative;
+        overflow: hidden;
+        border: 1px solid #e2e8f0;
+    }
+    .shiny-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 12px 24px -10px rgba(0,0,0,0.1);
+        border-color: #cbd5e1;
+    }
+    .shiny-card::after {
+        content: "";
+        position: absolute;
+        top: -50%;
+        left: -50%;
+        width: 200%;
+        height: 200%;
+        background: linear-gradient(
+            45deg,
+            transparent 0%,
+            rgba(255, 255, 255, 0.1) 45%,
+            rgba(255, 255, 255, 0.5) 50%,
+            rgba(255, 255, 255, 0.1) 55%,
+            transparent 100%
+        );
+        transform: rotate(25deg);
+        transition: all 0.5s;
+        pointer-events: none;
+        opacity: 0;
+    }
+    .shiny-card:hover::after {
+        left: 100%;
+        opacity: 1;
+        transition: all 0.8s;
+    }
+    .status-line {
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 6px;
+    }
+    .q-table th {
+        font-weight: 800 !important;
+        text-transform: uppercase;
+        font-size: 0.65rem !important;
+        letter-spacing: 0.05em;
+        color: #64748b;
+    }
+    .q-table td {
+        font-size: 0.85rem !important;
+        padding: 4px 8px !important;
+    }
+    .compact-input .q-field__control {
+        height: 36px !important;
+        min-height: 36px !important;
+    }
+    .q-uploader { 
+        width: 100% !important; 
+        box-shadow: none !important; 
+        border: none !important; 
+    }
+    .q-uploader__header { width: 100%; background: none; color: inherit; padding: 0; }
+    .q-uploader__list { display: none !important; }
+    
+    .big-date {
+        font-size: 1.75rem;
+        line-height: 1;
+        font-weight: 800;
+        letter-spacing: -0.05em;
+    }
+    .big-shift {
+        font-size: 1.25rem;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+    }
+    .glass-header {
+        background: rgba(15, 23, 42, 0.9) !important;
+        backdrop-filter: blur(8px);
+    }
+</style>
+''', shared=True)
+
+_DB_REV = 0
+_DB_REV_LOCK = threading.Lock()
+
+def bump_db_rev():
+    global _DB_REV
+    with _DB_REV_LOCK:
+        _DB_REV += 1
+
+def format_date_vn(date_str):
+    try:
+        dt = datetime.strptime(date_str, "%d.%m.%Y")
+        days = ['T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'CN']
+        return f"{days[dt.weekday()]} {dt.strftime('%d.%m.%y')}"
+    except Exception:
+        return date_str
+
+def format_shift_display(date_str, shift_raw):
+    zone = ""
+    time_part = shift_raw or "--"
+    match = RE_ZONE_PATTERN.search(time_part)
+    if match:
+        time_part = match.group(1).strip()
+        zone = match.group(2).strip().capitalize()
+    formatted_date = format_date_vn(date_str)
+    if time_part in ("OFF", "HỌC"):
+        return f"{formatted_date} | {time_part}"
+    display = f"{formatted_date} | {time_part}"
+    if zone:
+        display += f" | {zone}"
+    return display
+
+def shift_color(shift):
+    if shift == "OFF": return "negative"
+    if shift and "HỌC" in shift: return "info"
+    if shift and shift != "--": return "positive"
+    return "grey-7"
+
+def shift_text_class(shift):
+    if shift == "OFF": return "text-red-600"
+    if shift and "HỌC" in shift: return "text-blue-600"
+    if shift and shift != "--": return "text-green-700"
+    return "text-grey-7"
+
+def build_copy_text(date_str, shift_info, flights):
+    display = format_shift_display(date_str, shift_info)
+    lines = [display]
+    for f in flights:
+        row = f"✈ {f.get('Type','')} {f.get('Call','')} {f.get('Route','')} {f.get('Open','')} {f.get('Close','')} {f.get('Bay','')} {f.get('Names','')}"
+        lines.append(RE_MULTIPLE_SPACES.sub(' ', row).strip())
+    return "\n".join(lines)
+
+
+@ui.page('/')
+def main_page():
+    UI_CONNECTED.set()
+    state = {'filter': 'All', 'select_mode': False, 'selected': set(), 'last_rev': -1}
+
+    dark = ui.dark_mode(False)
+
+    # --- Header ---
+    with ui.header().classes('items-center justify-between glass-header px-4 py-1 h-14 shadow-md'):
+        with ui.row().classes('items-center gap-2'):
+            ui.icon('auto_awesome', color='white').classes('text-2xl')
+            ui.label('RosterMaster').classes('text-2xl font-black text-white tracking-tighter uppercase')
+        status_label = ui.label('Sẵn sàng').classes('text-xs font-medium text-slate-400 uppercase tracking-widest')
+
+    # --- Status timer ---
+    def poll_status():
+        s, _ = try_get_app_status()
+        details = s.get('details', '')
+        st = s.get('state', 'Idle')
+        if details and details != 'Ready':
+            status_label.text = f"{st}: {details}"
+        else:
+            status_label.text = 'Sẵn sàng' if st == 'Idle' else st
+        with _DB_REV_LOCK:
+            rev = _DB_REV
+        if rev != state['last_rev']:
+            state['last_rev'] = rev
+            roster_list.refresh()
+
+    ui.timer(5.0, poll_status)
+
+    # --- Tabs ---
+    with ui.tabs().props('dense align="justify" inline-label').classes('w-full bg-white text-slate-600 shadow-sm') as tabs:
+        main_tab = ui.tab('Lịch', icon='calendar_today').props('no-caps')
+        config_tab = ui.tab('Cài đặt', icon='tune').props('no-caps')
+
+    with ui.tab_panels(tabs, value=main_tab).classes('w-full p-0 bg-transparent'):
+        # ========== MAIN TAB ==========
+        with ui.tab_panel(main_tab).classes('p-2 gap-2'):
+            # Action row (Modern Glass Buttons)
+            with ui.row().classes('w-full gap-2 mb-2 no-wrap'):
+                ui.button('QUÉT ZALO', icon='refresh', on_click=lambda: do_scan())\
+                    .props('unelevated no-caps').classes('flex-1 h-12 rounded-xl bg-teal-600 text-white font-bold shadow-sm')
+                
+                with ui.element('div').classes('flex-[1.5] h-12 relative rounded-xl bg-indigo-600 shadow-sm overflow-hidden'):
+                    ui.label('TẢI LÊN').classes('absolute-center text-white font-bold pointer-events-none')
+                    upload = ui.upload(
+                        on_upload=lambda e: handle_upload(e),
+                        auto_upload=True, max_files=1,
+                    ).props('accept=".xlsx,.xls,.csv" flat color=white').classes('w-full h-full opacity-0')
+
+            # Toolbar row
+            with ui.row().classes('w-full items-center justify-between px-1 mb-2'):
+                filter_select = ui.select(
+                    {'All': 'Tất cả', 'This Month': 'Tháng này'},
+                    value='All',
+                    on_change=lambda e: on_filter_change(e.value)
+                ).props('dense standout rounded-sm').classes('w-32 text-sm font-bold')
+
+                with ui.row().classes('gap-1'):
+                    ui.button(icon='refresh', on_click=lambda: roster_list.refresh()).props('flat round dense color=slate-400')
+                    ui.button(icon='event', on_click=lambda: do_export_ical()).props('flat round dense color=green-600')
+                    ui.button(icon='description', on_click=lambda: do_export_csv()).props('flat round dense color=blue-600')
+
+            # Selection controls
+            with ui.row().classes('w-full items-center px-1 mb-2 gap-2'):
+                sel_switch = ui.switch('Chế độ chọn', value=False, on_change=lambda e: toggle_select(e.value)).props('dense')
+                del_btn = ui.button('Xoá đã chọn', on_click=lambda: do_bulk_delete()).props('flat dense no-caps size=sm color=red')
+                del_btn.bind_visibility_from(sel_switch, 'value')
+
+            # Roster list container
+            @ui.refreshable
+            def roster_list():
+                rows = load_history(filter_mode=state['filter'])
+                if not rows:
+                    with ui.column().classes('w-full items-center py-8 text-grey-5'):
+                        ui.icon('event_note', size='48px').classes('opacity-40')
+                        ui.label('Chưa có dữ liệu').classes('text-sm')
+                        ui.label('Tải file hoặc quét tự động để bắt đầu').classes('text-xs')
+                    return
+                for r in rows:
+                    try:
+                        d = json.loads(r['full_data'])
+                        render_card(r['work_date'], d.get('shift', '--'), d.get('flights', []), state)
+                    except Exception:
+                        pass
+
+            with ui.column().classes('w-full gap-3'):
+                roster_list()
+
+        # ========== CONFIG TAB ==========
+        with ui.tab_panel(config_tab).classes('p-4 gap-4'):
+            alias_file = "v42_aliases.txt"
+            aliases = ""
+            if os.path.exists(alias_file):
+                with open(alias_file, 'r', encoding='utf-8') as f:
+                    aliases = f.read()
+            else:
+                aliases = "Ấn, ẨN, Ẩn, Nguyễn Ngọc Ấn, NGỌC ẤN, Nguyễn Ngọc Ẩn, NGỌC ẨN"
+
+            with ui.card().props('flat').classes('w-full p-4 bg-white rounded-2xl shadow-sm border border-slate-100'):
+                ui.label('THIẾT LẬP CÁ NHÂN').classes('text-xs font-black text-indigo-600 tracking-widest mb-2')
+                ui.label('Tên của bạn (cách nhau bằng dấu phẩy)').classes('text-sm font-medium text-slate-500 mb-1')
+                alias_input = ui.textarea(value=aliases).props('outlined dense autogrow')\
+                    .classes('w-full bg-slate-50 rounded-lg mb-4 text-sm font-bold')
+                ui.button('CẬP NHẬT DANH SÁCH TÊN', on_click=lambda: save_aliases(alias_input.value))\
+                    .props('unelevated no-caps color=indigo').classes('w-full h-12 rounded-xl font-bold')
+
+            with ui.card().props('flat').classes('w-full p-4 bg-white rounded-2xl shadow-sm border border-slate-100 mt-4'):
+                ui.label('HỆ THỐNG').classes('text-xs font-black text-slate-400 tracking-widest mb-2')
+                with ui.row().classes('w-full items-center justify-between mb-4'):
+                    ui.label('Chế độ tối (Dark Mode)').classes('text-sm font-medium text-slate-600')
+                    ui.switch(on_change=lambda e: dark.set_value(e.value)).props('dense color=indigo')
+
+                ui.separator().classes('mb-4')
+                
+                async def confirm_clear():
+                    result = await ui.run_javascript(
+                        'confirm("Bạn có chắc muốn xoá toàn bộ dữ liệu không?")'
+                    )
+                    if result:
+                        clear_db()
+                        roster_list.refresh()
+                        ui.notify('Đã xoá toàn bộ dữ liệu', type='positive')
+
+                ui.button('XOÁ TOÀN BỘ DỮ LIỆU', icon='delete_forever', on_click=confirm_clear)\
+                    .props('unelevated no-caps color=red-1 text-color=red-7').classes('w-full h-12 rounded-xl font-bold')
+
+    # --- Handlers ---
+    def on_filter_change(val):
+        state['filter'] = val
+        roster_list.refresh()
+
+    def toggle_select(val):
+        state['select_mode'] = val
+        state['selected'].clear()
+        roster_list.refresh()
+
+    def save_aliases(text):
+        text = text.strip()
+        if len(text) > 5000:
+            text = text[:5000]
+        if text:
+            processed = [a.strip() for a in text.split(',') if a.strip()]
+            text = ','.join(processed)
+        target = os.path.join(os.getcwd(), "v42_aliases.txt")
+        expected = os.path.realpath(target)
+        current_dir = os.path.realpath('.')
+        if not expected.startswith(current_dir) or os.path.basename(expected) != "v42_aliases.txt":
+            ui.notify('Lỗi đường dẫn', type='negative')
+            return
+        with open(target, 'w', encoding='utf-8') as f:
+            f.write(text)
+        ui.notify('Đã cập nhật tên thành công', type='positive')
+
+    def do_scan():
+        if not INGEST_RUNNING.is_set():
+            INGEST_RUNNING.set()
+            def _scan():
+                try:
+                    _run_ingest_once()
+                finally:
+                    bump_db_rev()
+            threading.Thread(target=_scan, daemon=True).start()
+            ui.notify('Đang quét thư mục Zalo...', type='info')
+        else:
+            ui.notify('Đang xử lý...', type='warning')
+
+    def handle_upload(e: UploadEventArguments):
+        content = e.content.read()
+        filename = e.name
+        if len(content) > MAX_UPLOAD_MB * 1024 * 1024:
+            ui.notify('File quá lớn (tối đa 20MB)', type='negative')
+            return
+        aliases = get_aliases()
+        alias_regex = compile_alias_regex(aliases)
+        INGEST_RUNNING.set()
+        try:
+            results, err = process_file_stream(io.BytesIO(content), filename, alias_regex)
+            if results:
+                final = consolidate_file_results(results)
+                count = 0
+                for res in final:
+                    save_entry_overwrite(res['date'], res)
+                    count += 1
+                ui.notify(f'Đã nhập {count} ngày từ {filename}', type='positive')
+                roster_list.refresh()
+            elif err:
+                ui.notify(f'Lỗi: {err}', type='negative')
+            else:
+                ui.notify('Không tìm thấy dữ liệu trong file', type='info')
+        except Exception as ex:
+            ui.notify(f'Lỗi: {str(ex)}', type='negative')
+        finally:
+            INGEST_RUNNING.clear()
+        upload.reset()
+
+    def do_export_ical():
+        content = generate_ical_content()
+        if not content:
+            ui.notify('Không có dữ liệu để xuất', type='warning')
+            return
+        ui.download(content.encode('utf-8'), f"Roster_Export_{datetime.now().strftime('%Y%m%d')}.ics")
+
+    def do_export_csv():
+        content = generate_csv_content()
+        if not content:
+            ui.notify('Không có dữ liệu để xuất', type='warning')
+            return
+        ui.download(content.encode('utf-8'), f"Roster_Export_{datetime.now().strftime('%Y%m%d')}.csv")
+
+    def do_bulk_delete():
+        dates = list(state['selected'])
+        if not dates:
+            ui.notify('Chưa chọn ngày nào', type='warning')
+            return
+        dates = [d for d in dates if RE_DATE.match(d)]
+        if dates:
+            with DB_LOCK:
+                conn = get_db()
+                try:
+                    placeholders = ','.join('?' for _ in dates)
+                    conn.execute(f"DELETE FROM work_schedule WHERE work_date IN ({placeholders})", tuple(dates))
+                    conn.commit()
+                finally:
+                    conn.close()
+            ui.notify(f'Đã xoá {len(dates)} ngày', type='positive')
+        state['selected'].clear()
+        state['select_mode'] = False
+        roster_list.refresh()
+
+
+def render_card(date_str, shift_info, flights, state):
+    color = shift_color(shift_info)
+    txt_cls = shift_text_class(shift_info)
+    
+    # Split display components for better styling
+    vn_date = format_date_vn(date_str)
+    
+    zone = ""
+    time_part = shift_info or "--"
+    match = RE_ZONE_PATTERN.search(time_part)
+    if match:
+        time_part = match.group(1).strip()
+        zone = match.group(2).strip().upper()
+
+    with ui.card().props('flat').classes('w-full p-0 shiny-card mb-2 overflow-hidden shadow-sm'):
+        # Color bar indicator
+        ui.element('div').classes(f'status-line bg-{color}')
+        
+        with ui.row().classes('w-full p-4 items-center justify-between no-wrap gap-4'):
+            # Selection & Date/Shift info
+            with ui.row().classes('items-center gap-4 flex-1 min-w-0 no-wrap'):
+                if state['select_mode']:
+                    ui.checkbox(value=date_str in state['selected'], 
+                               on_change=lambda e, d=date_str: _toggle_sel(e.value, d, state)).props('dense')
+                
+                with ui.column().classes('gap-0'):
+                    ui.label(vn_date).classes('text-xs font-bold text-slate-400 uppercase tracking-widest')
+                    ui.label(time_part).classes(f'big-date {txt_cls} truncate')
+                    if zone:
+                        ui.label(zone).classes('text-[10px] font-black text-slate-300 tracking-tighter')
+
+            # Action Buttons
+            with ui.column().classes('items-end gap-1'):
+                copy_text = build_copy_text(date_str, shift_info, flights)
+                ui.button(icon='content_copy', on_click=lambda t=copy_text: _copy(t))\
+                    .props('flat dense round size=md color=slate-400').classes('hover:bg-slate-100')
+                
+                if flights:
+                    ui.badge(f'{len(flights)} Flights', color='slate-200', text_color='slate-600')\
+                        .classes('text-[10px] font-bold px-1 rounded-sm')
+
+        if flights:
+            with ui.expansion('CHI TIẾT CHUYẾN BAY', icon='flight_takeoff').props('dense').classes('w-full text-[10px] font-bold text-slate-400 border-t border-slate-50'):
+                with ui.element('div').classes('px-4 pb-4 w-full overflow-x-auto'):
+                    cols = [
+                        {'name': 'Call', 'label': 'Call', 'field': 'Call', 'align': 'left'},
+                        {'name': 'Route', 'label': 'Route', 'field': 'Route', 'align': 'left'},
+                        {'name': 'Open', 'label': 'Time', 'field': 'Open', 'align': 'left'},
+                        {'name': 'Bay', 'label': 'Bay', 'field': 'Bay', 'align': 'center'},
+                        {'name': 'Names', 'label': 'Names', 'field': 'Names', 'align': 'left'},
+                    ]
+                    # Format flights for compact display
+                    compact_flights = []
+                    for f in flights:
+                        compact_flights.append({
+                            'Call': f.get('Call',''),
+                            'Route': f.get('Route',''),
+                            'Open': f"{f.get('Open','')} - {f.get('Close','')}",
+                            'Bay': f.get('Bay',''),
+                            'Names': f.get('Names','')
+                        })
+                    
+                    ui.table(columns=cols, rows=compact_flights).props('dense flat square hide-bottom hide-pagination')\
+                        .classes('bg-slate-50 rounded-lg border border-slate-100')
+
+
+def _toggle_sel(checked, date_str, state):
+    if checked:
+        state['selected'].add(date_str)
+    else:
+        state['selected'].discard(date_str)
+
+async def _copy(text):
+    await ui.clipboard.write(text)
+    ui.notify('Đã sao chép', type='positive', position='bottom', timeout=1500)
+
+
+# ==========================================
+# 🚀 MAIN ENTRY
+# ==========================================
+
+if __name__ in {"__main__", "builtins"}:
+    debug_log("Application starting", "MAIN")
+    debug_log(f"Debug mode is {'enabled' if DEBUG_ENABLED else 'disabled'}", "MAIN")
+    init_db()
+    threading.Thread(target=run_auto_ingest, daemon=True).start()
+    threading.Thread(target=auto_open_launcher, daemon=True).start()
+    debug_log(f"Serving application on port {DEFAULT_PORT}", "MAIN")
+    ui.run(port=DEFAULT_PORT, reload=False, show=False, title='RosterMaster', host='127.0.0.1')

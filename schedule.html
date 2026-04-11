@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Lịch — 01.04.2026 → 09.04.2026</title>
+    <style>
+:root {
+    --space-1: 0.15rem; --space-2: 0.3rem; --space-3: 0.5rem; --space-4: 0.7rem;
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+    --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -2px rgba(0,0,0,0.1);
+    --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -4px rgba(0,0,0,0.1);
+    --radius-sm: 0.375rem; --radius-md: 0.5rem; --radius-lg: 0.75rem;
+    --transition-fast: 150ms ease; --transition-base: 200ms ease;
+}
+* { box-sizing: border-box; }
+body {
+    font-size: 0.875rem; line-height: 1.5; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+    min-height: 100vh; margin: 0; padding: 1rem;
+    color: #1e293b;
+}
+summary::after { content: none !important; display: none !important; }
+h1 { font-size: 1.2rem; margin: 0 0 0.25rem; font-weight: 700; }
+header { margin-bottom: 1rem; padding-bottom: 0.75rem; border-bottom: 1px solid rgba(148,163,184,0.3); }
+header p { font-size: 0.75rem; color: #64748b; margin: 0; }
+.rd { margin-bottom: 0.5rem; border-radius: var(--radius-lg); overflow: hidden; width: 100%; }
+.rc {
+    display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.5rem 0.75rem; border-radius: var(--radius-lg);
+    color: #fff; position: relative; overflow: hidden;
+    box-shadow: var(--shadow-md);
+    width: 100%;
+}
+.rc::before {
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(180deg, rgba(255,255,255,0.15) 0%, transparent 50%);
+    pointer-events: none;
+}
+.rc-on  { background: linear-gradient(135deg, #22c55e 0%, #16a34a 50%, #15803d 100%); }
+.rc-off { background: linear-gradient(135deg, #f87171 0%, #ef4444 50%, #dc2626 100%); }
+.rc-edu { background: linear-gradient(135deg, #60a5fa 0%, #3b82f6 50%, #2563eb 100%); }
+.rc-nil { background: linear-gradient(135deg, #94a3b8 0%, #64748b 50%, #475569 100%); }
+.rc-content { flex: 1; min-width: 0; z-index: 1; display: flex; align-items: center; gap: 0.75rem; }
+.rc-date-col { min-width: 4.5rem; }
+.rc-date { font-size: 0.78rem; color: #fff; text-transform: uppercase; letter-spacing: 0.05rem; margin: 0; font-weight: 600; text-shadow: 0 1px 2px rgba(0,0,0,0.2); }
+.rc-badge {
+    background: rgba(255,255,255,0.25); color: #fff;
+    padding: 0.2rem 0.5rem; border-radius: 9999px;
+    font-size: 0.6rem; font-weight: 600; white-space: nowrap;
+    z-index: 1; backdrop-filter: blur(4px); flex-shrink: 0;
+}
+details summary { list-style: none; cursor: pointer; display: flex; padding: 0; -webkit-appearance: none; appearance: none; }
+summary::-webkit-details-marker { display: none !important; }
+summary::marker { content: '' !important; }
+.fd {
+    padding: 0.4rem 0.6rem; font-size: 0.75rem;
+    background: rgba(255,255,255,0.95);
+    border: 1px solid rgba(148,163,184,0.25); border-top: none;
+    border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+    box-shadow: var(--shadow-sm); width: 100%; overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+.fd table { font-size: 0.75rem; width: 100%; min-width: max-content; table-layout: auto; border-collapse: collapse; }
+.fd th { font-weight: 600; color: #1e293b; border-bottom: 1px solid rgba(148,163,184,0.2); padding: 0.3rem 0.5rem; white-space: nowrap; font-size: 0.7rem; }
+.fd td { padding: 0.25rem 0.5rem; color: #475569; white-space: nowrap; }
+.fd tr.flight-airbus { background: #7f1d1d !important; }
+.fd tr.flight-airbus td { color: #fecaca !important; }
+.fd tr.flight-boeing { background: #1e3a5f !important; }
+.fd tr.flight-boeing td { color: #bfdbfe !important; }
+.fd tr.flight-other { background: #14532d !important; }
+.fd tr.flight-other td { color: #bbf7d0 !important; }
+.empty { text-align: center; padding: 2rem 1.5rem; border: 2px dashed rgba(148,163,184,0.4); border-radius: var(--radius-lg); background: rgba(255,255,255,0.5); }
+.empty p:first-child { font-weight: 600; margin: 0; font-size: 0.95rem; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Lịch làm việc</h1>
+        <p>Phạm vi: Tháng này | 9 mục | Cập nhật: 22:28 08.04.2026</p>
+    </header>
+    <main>
+
+    <details class="rd" open>
+        <summary>
+            <div class="rc rc-on">
+                <div class="rc-content">
+                    <div class="rc-date-col">
+                        <p class="rc-date">T5 09.04.26 | 07:00 - 15:00 | Băng chuyền</p>
+                    </div>
+                </div>
+                    <span class="rc-badge">3 chuyến</span>
+            </div>
+        </summary>
+        <div class="fd">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Giờ mở</th>
+                        <th>Giờ đóng</th>
+                        <th>Chuyến</th>
+                        <th>Tuyến bay</th>
+                        <th>Cửa máy bay</th>
+                        <th>Loại tàu bay</th>
+                        <th>Tổ lái</th>
+                    </tr>
+                </thead>
+                <tbody>
+        
+                    <tr class="flight-airbus">
+                        <td>06:55</td>
+                        <td>09:05</td>
+                        <td>2W8622</td>
+                        <td>PQC-TBS-BTS</td>
+                        <td>11</td>
+                        <td>A330-300</td>
+                        <td>T.Kiệt,Ấn</td>
+                    </tr>
+            
+                    <tr class="flight-airbus">
+                        <td>08:45</td>
+                        <td>10:55</td>
+                        <td>VZ981</td>
+                        <td>PQC-BKK</td>
+                        <td>7</td>
+                        <td>A320</td>
+                        <td>Ấn</td>
+                    </tr>
+            
+                    <tr class="flight-boeing">
+                        <td>11:35</td>
+                        <td>13:45</td>
+                        <td>ZF2602</td>
+                        <td>PQC-VKO</td>
+                        <td>7</td>
+                        <td>B767-300</td>
+                        <td>N.Vũ,Ấn</td>
+                    </tr>
+            
+                </tbody>
+            </table>
+        </div>
+    </details>
+
+    <details class="rd" open>
+        <summary>
+            <div class="rc rc-on">
+                <div class="rc-content">
+                    <div class="rc-date-col">
+                        <p class="rc-date">T4 08.04.26 | 08:00 - 16:00 | Băng chuyền</p>
+                    </div>
+                </div>
+                    <span class="rc-badge">4 chuyến</span>
+            </div>
+        </summary>
+        <div class="fd">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Giờ mở</th>
+                        <th>Giờ đóng</th>
+                        <th>Chuyến</th>
+                        <th>Tuyến bay</th>
+                        <th>Cửa máy bay</th>
+                        <th>Loại tàu bay</th>
+                        <th>Tổ lái</th>
+                    </tr>
+                </thead>
+                <tbody>
+        
+                    <tr class="flight-airbus">
+                        <td>08:10</td>
+                        <td>09:30</td>
+                        <td>9G1960</td>
+                        <td>PQC-SGN</td>
+                        <td>14</td>
+                        <td>A320</td>
+                        <td>Ấn</td>
+                    </tr>
+            
+                    <tr class="flight-airbus">
+                        <td>10:05</td>
+                        <td>11:25</td>
+                        <td>VN1824</td>
+                        <td>PQC-SGN</td>
+                        <td>9</td>
+                        <td>A320</td>
+                        <td>Ấn</td>
+                    </tr>
+            
+                    <tr class="flight-airbus">
+                        <td>12:45</td>
+                        <td>14:55</td>
+                        <td>VJ983</td>
+                        <td>PQC-SIN</td>
+                        <td>4</td>
+                        <td>A321</td>
+                        <td>Ấn</td>
+                    </tr>
+            
+                    <tr class="flight-airbus">
+                        <td>14:30</td>
+                        <td>15:50</td>
+                        <td>VJ714</td>
+                        <td>PQC-DAD</td>
+                        <td>14</td>
+                        <td>A321</td>
+                        <td>H,Phúc,Ấn</td>
+                    </tr>
+            
+                </tbody>
+            </table>
+        </div>
+    </details>
+
+    <details class="rd" >
+        <summary>
+            <div class="rc rc-off">
+                <div class="rc-content">
+                    <div class="rc-date-col">
+                        <p class="rc-date">T3 07.04.26 | OFF</p>
+                    </div>
+                </div>
+                </div>
+        </summary>
+    </details>
+
+    <details class="rd" open>
+        <summary>
+            <div class="rc rc-on">
+                <div class="rc-content">
+                    <div class="rc-date-col">
+                        <p class="rc-date">T2 06.04.26 | 15:00 - 23:00 | Băng chuyền</p>
+                    </div>
+                </div>
+                    <span class="rc-badge">4 chuyến</span>
+            </div>
+        </summary>
+        <div class="fd">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Giờ mở</th>
+                        <th>Giờ đóng</th>
+                        <th>Chuyến</th>
+                        <th>Tuyến bay</th>
+                        <th>Cửa máy bay</th>
+                        <th>Loại tàu bay</th>
+                        <th>Tổ lái</th>
+                    </tr>
+                </thead>
+                <tbody>
+        
+                    <tr class="flight-airbus">
+                        <td>15:00</td>
+                        <td>17:10</td>
+                        <td>KC646</td>
+                        <td>PQC-ALA</td>
+                        <td>4</td>
+                        <td>A321</td>
+                        <td>Ấn</td>
+                    </tr>
+            
+                    <tr class="flight-airbus">
+                        <td>17:45</td>
+                        <td>19:05</td>
+                        <td>VJ716</td>
+                        <td>PQC-DAD</td>
+                        <td>12</td>
+                        <td>A320</td>
+                        <td>Ấn,T.Kiệt</td>
+                    </tr>
+            
+                    <tr class="flight-other">
+                        <td>19:25</td>
+                        <td>21:35</td>
+                        <td>7C2316</td>
+                        <td>PQC-ICN</td>
+                        <td>6</td>
+                        <td>B737-800/
+B737MAX8</td>
+                        <td>Lặp,Ấn</td>
+                    </tr>
+            
+                    <tr class="flight-other">
+                        <td>21:20</td>
+                        <td>23:30</td>
+                        <td>ZE582</td>
+                        <td>PQC-ICN</td>
+                        <td>4</td>
+                        <td>B737MAX8</td>
+                        <td>Ấn</td>
+                    </tr>
+            
+                </tbody>
+            </table>
+        </div>
+    </details>
+
+    <details class="rd" open>
+        <summary>
+            <div class="rc rc-on">
+                <div class="rc-content">
+                    <div class="rc-date-col">
+                        <p class="rc-date">CN 05.04.26 | 15:00 - 23:00 | Băng chuyền</p>
+                    </div>
+                </div>
+                    <span class="rc-badge">3 chuyến</span>
+            </div>
+        </summary>
+        <div class="fd">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Giờ mở</th>
+                        <th>Giờ đóng</th>
+                        <th>Chuyến</th>
+                        <th>Tuyến bay</th>
+                        <th>Cửa máy bay</th>
+                        <th>Loại tàu bay</th>
+                        <th>Tổ lái</th>
+                    </tr>
+                </thead>
+                <tbody>
+        
+                    <tr class="flight-airbus">
+                        <td>14:45</td>
+                        <td>16:55</td>
+                        <td>VJ978</td>
+                        <td>PQC-ICN</td>
+                        <td>4</td>
+                        <td>A321</td>
+                        <td>Ấn</td>
+                    </tr>
+            
+                    <tr class="flight-airbus">
+                        <td>17:35</td>
+                        <td>19:45</td>
+                        <td>VJ976</td>
+                        <td>PQC-ICN</td>
+                        <td>6</td>
+                        <td>A321</td>
+                        <td>Ấn,Viên</td>
+                    </tr>
+            
+                    <tr class="flight-airbus">
+                        <td>20:10</td>
+                        <td>22:20</td>
+                        <td>VJ968</td>
+                        <td>PQC-PUS</td>
+                        <td>5</td>
+                        <td>A321</td>
+                        <td>Ấn,H.Phúc</td>
+                    </tr>
+            
+                </tbody>
+            </table>
+        </div>
+    </details>
+
+    <details class="rd" open>
+        <summary>
+            <div class="rc rc-on">
+                <div class="rc-content">
+                    <div class="rc-date-col">
+                        <p class="rc-date">T7 04.04.26 | 15:00 - 23:00 | Băng chuyền</p>
+                    </div>
+                </div>
+                    <span class="rc-badge">3 chuyến</span>
+            </div>
+        </summary>
+        <div class="fd">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Giờ mở</th>
+                        <th>Giờ đóng</th>
+                        <th>Chuyến</th>
+                        <th>Tuyến bay</th>
+                        <th>Cửa máy bay</th>
+                        <th>Loại tàu bay</th>
+                        <th>Tổ lái</th>
+                    </tr>
+                </thead>
+                <tbody>
+        
+                    <tr class="flight-airbus">
+                        <td>15:05</td>
+                        <td>16:25</td>
+                        <td>VN1828</td>
+                        <td>PQC-SGN</td>
+                        <td>9</td>
+                        <td>A321</td>
+                        <td>Lợi,Án</td>
+                    </tr>
+            
+                    <tr class="flight-airbus">
+                        <td>19:40</td>
+                        <td>21:00</td>
+                        <td>9G1242</td>
+                        <td>PQC-HAN</td>
+                        <td>8</td>
+                        <td>A321</td>
+                        <td>Ấn</td>
+                    </tr>
+            
+                    <tr class="flight-other">
+                        <td>20:25</td>
+                        <td>22:35</td>
+                        <td>ZE982</td>
+                        <td>PQC-PUS</td>
+                        <td>8</td>
+                        <td>B737MAX8</td>
+                        <td>Đủ,Ấn</td>
+                    </tr>
+            
+                </tbody>
+            </table>
+        </div>
+    </details>
+
+    <details class="rd" open>
+        <summary>
+            <div class="rc rc-on">
+                <div class="rc-content">
+                    <div class="rc-date-col">
+                        <p class="rc-date">T6 03.04.26 | 08:00 - 16:00 | Băng chuyền</p>
+                    </div>
+                </div>
+                    <span class="rc-badge">3 chuyến</span>
+            </div>
+        </summary>
+        <div class="fd">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Giờ mở</th>
+                        <th>Giờ đóng</th>
+                        <th>Chuyến</th>
+                        <th>Tuyến bay</th>
+                        <th>Cửa máy bay</th>
+                        <th>Loại tàu bay</th>
+                        <th>Tổ lái</th>
+                    </tr>
+                </thead>
+                <tbody>
+        
+                    <tr class="flight-airbus">
+                        <td>08:10</td>
+                        <td>09:30</td>
+                        <td>9G1960</td>
+                        <td>PQC-SGN</td>
+                        <td>5</td>
+                        <td>A320</td>
+                        <td>Ấn</td>
+                    </tr>
+            
+                    <tr class="flight-airbus">
+                        <td>10:40</td>
+                        <td>12:00</td>
+                        <td>VN1830</td>
+                        <td>PQC-SGN</td>
+                        <td>9</td>
+                        <td>A320</td>
+                        <td>Ấn,Khang</td>
+                    </tr>
+            
+                    <tr class="flight-airbus">
+                        <td>14:25</td>
+                        <td>15:45</td>
+                        <td>VJ326</td>
+                        <td>PQC-SGN</td>
+                        <td>10</td>
+                        <td>A321</td>
+                        <td>Ấn</td>
+                    </tr>
+            
+                </tbody>
+            </table>
+        </div>
+    </details>
+
+    <details class="rd" open>
+        <summary>
+            <div class="rc rc-on">
+                <div class="rc-content">
+                    <div class="rc-date-col">
+                        <p class="rc-date">T5 02.04.26 | 16:00 - 00:01 | Băng chuyền</p>
+                    </div>
+                </div>
+                    <span class="rc-badge">3 chuyến</span>
+            </div>
+        </summary>
+        <div class="fd">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Giờ mở</th>
+                        <th>Giờ đóng</th>
+                        <th>Chuyến</th>
+                        <th>Tuyến bay</th>
+                        <th>Cửa máy bay</th>
+                        <th>Loại tàu bay</th>
+                        <th>Tổ lái</th>
+                    </tr>
+                </thead>
+                <tbody>
+        
+                    <tr class="flight-airbus">
+                        <td>16:05</td>
+                        <td>18:15</td>
+                        <td>UO597</td>
+                        <td>PQC-HKG</td>
+                        <td>7</td>
+                        <td>A321</td>
+                        <td>Ấn</td>
+                    </tr>
+            
+                    <tr class="flight-other">
+                        <td>19:25</td>
+                        <td>21:35</td>
+                        <td>7C2316</td>
+                        <td>PQC-ICN</td>
+                        <td>6</td>
+                        <td>B737-800/
+B737MAX8</td>
+                        <td>Linh,Ấn</td>
+                    </tr>
+            
+                    <tr class="flight-other">
+                        <td>21:35</td>
+                        <td>23:45</td>
+                        <td>TW056</td>
+                        <td>PQC-ICN</td>
+                        <td>5</td>
+                        <td>B737-800</td>
+                        <td>Kiệt,Ấn</td>
+                    </tr>
+            
+                </tbody>
+            </table>
+        </div>
+    </details>
+
+    <details class="rd" open>
+        <summary>
+            <div class="rc rc-on">
+                <div class="rc-content">
+                    <div class="rc-date-col">
+                        <p class="rc-date">T4 01.04.26 | 11:00 - 19:00 | Băng chuyền</p>
+                    </div>
+                </div>
+                    <span class="rc-badge">4 chuyến</span>
+            </div>
+        </summary>
+        <div class="fd">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Giờ mở</th>
+                        <th>Giờ đóng</th>
+                        <th>Chuyến</th>
+                        <th>Tuyến bay</th>
+                        <th>Cửa máy bay</th>
+                        <th>Loại tàu bay</th>
+                        <th>Tổ lái</th>
+                    </tr>
+                </thead>
+                <tbody>
+        
+                    <tr class="flight-airbus">
+                        <td>11:00</td>
+                        <td>12:20</td>
+                        <td>VJ766</td>
+                        <td>PQC-HPH</td>
+                        <td>10</td>
+                        <td>A321</td>
+                        <td>T.Kiệt,Ấn</td>
+                    </tr>
+            
+                    <tr class="flight-airbus">
+                        <td>13:45</td>
+                        <td>15:05</td>
+                        <td>9G1224</td>
+                        <td>PQC-HAN</td>
+                        <td>9</td>
+                        <td>A321</td>
+                        <td>Ấn</td>
+                    </tr>
+            
+                    <tr class="flight-other">
+                        <td>15:20</td>
+                        <td>17:30</td>
+                        <td>TR525</td>
+                        <td>PQC-SIN</td>
+                        <td>6</td>
+                        <td>E190</td>
+                        <td>Ấn</td>
+                    </tr>
+            
+                    <tr class="flight-airbus">
+                        <td>18:00</td>
+                        <td>20:10</td>
+                        <td>MU862</td>
+                        <td>PQC-XIY</td>
+                        <td>7</td>
+                        <td>A321</td>
+                        <td>Ấn.Đông</td>
+                    </tr>
+            
+                </tbody>
+            </table>
+        </div>
+    </details>
+    </main>
+</body>
+</html>

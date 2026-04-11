@@ -3321,7 +3321,7 @@ if __name__ in {"__main__", "builtins"}:
             from database import get_db
 
             today_iso = datetime.now().strftime("%Y-%m-%d")
-            today_db = datetime.now().strftime("%d.%m.%y")
+            today_db = datetime.now().strftime("%d.%m.%Y")
 
             conn = get_db()
             try:
