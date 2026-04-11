@@ -147,13 +147,7 @@ def init_db():
     c.execute("CREATE INDEX IF NOT EXISTS idx_ingestion_manifest_fingerprint ON ingestion_manifest(dataset_fingerprint)")
 
     # Migration: add ckrow column if missing
-    try:
-        conn.execute("ALTER TABLE work_schedule ADD COLUMN ckrow TEXT")
-        conn.commit()
-        debug_log("Added ckrow column to work_schedule")
-    except Exception as e:
-        if "duplicate column name" not in str(e).lower():
-            debug_log(f"ckrow migration skipped: {str(e)}")
+    add_ckrow_column()
 
     conn.commit()
     conn.close()
