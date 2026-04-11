@@ -6,8 +6,9 @@ cross-references with local DB, and calculates delay adjustments.
 """
 
 import logging
+import json
 import requests
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 from datetime import datetime
 
@@ -278,3 +279,110 @@ class DelayCalculator:
             new_ckrow=s.ck_row,
             was_delayed=True,
         )
+
+
+# ---------------------------------------------------------------------------
+# AutoSyncService
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SyncResult:
+    """Summary of a sync run."""
+    matched: int = 0
+    updated: int = 0
+    skipped: int = 0
+    errors: int = 0
+    details: list[str] = field(default_factory=list)
+
+
+class AutoSyncService:
+    """Orchestrates the full scrape -> match -> update pipeline."""
+
+    def __init__(self):
+        self.scraper = FlightScraper()
+        self.calculator = DelayCalculator()
+
+    def run_sync(self, db_conn, today_iso: str, today_ddmmyyyy: str) -> SyncResult:
+        """
+        Run the full sync pipeline.
+
+        Args:
+            db_conn: SQLite connection
+            today_iso: Today's date in YYYY-MM-DD format
+            today_ddmmyyyy: Today's date in DD.MM.YYYY format
+
+        Returns:
+            SyncResult with counts and detail log messages
+        """
+        result = SyncResult()
+
+        # Step 1: Fetch departures from API
+        logger.info(f"Starting flight sync for {today_iso}")
+        scraped = self.scraper.fetch_departures(today_iso)
+        if not scraped:
+            result.details.append(f"No departures fetched for {today_iso}")
+            return result
+
+        # Step 2: Get today's schedule from DB
+        row = db_conn.execute(
+            "SELECT work_date, full_data FROM work_schedule WHERE work_date = ?",
+            (today_ddmmyyyy,)
+        ).fetchone()
+
+        if not row:
+            result.details.append(f"No schedule in DB for {today_ddmmyyyy}")
+            return result
+
+        data = json.loads(row["full_data"])
+        db_flights = data.get("flights", [])
+        if not db_flights:
+            result.details.append(f"No flights in DB schedule for {today_ddmmyyyy}")
+            return result
+
+        # Step 3: Match scraped flights with DB flights
+        matches = self.calculator.match_flights(scraped, db_flights, today_ddmmyyyy)
+        result.matched = len(matches)
+
+        # Step 4: Recalculate and apply updates
+        updated_flights = []
+        for match in matches:
+            updated = self.calculator.recalculate(match)
+            if updated:
+                # Update the original db_flight dict
+                match.db_flight["Open"] = updated.new_open
+                match.db_flight["Close"] = updated.new_close
+                match.db_flight["ckRow"] = updated.new_ckrow
+                updated_flights.append(match.db_flight)
+
+                delay_tag = "DELAY" if updated.was_delayed else "ckRow"
+                result.details.append(
+                    f"{delay_tag} {updated.flight_no}: "
+                    f"{match.db_open}->{updated.new_open}, "
+                    f"{match.db_close}->{updated.new_close}, "
+                    f"ckRow={updated.new_ckrow}"
+                )
+            else:
+                result.skipped += 1
+
+        # Step 5: Write back to DB if any changes
+        if updated_flights:
+            try:
+                data["flights"] = db_flights  # Already mutated in-place
+                new_json = json.dumps(data, ensure_ascii=False, default=str)
+                db_conn.execute(
+                    "UPDATE work_schedule SET full_data = ?, last_updated = CURRENT_TIMESTAMP WHERE work_date = ?",
+                    (new_json, today_ddmmyyyy)
+                )
+                db_conn.commit()
+                result.updated = len(updated_flights)
+                result.details.append(f"DB updated: {len(updated_flights)} flights changed")
+            except Exception as e:
+                logger.error(f"DB write error during sync: {e}")
+                result.errors += 1
+                result.details.append(f"DB write error: {e}")
+        else:
+            result.details.append(f"No changes needed ({result.skipped} flights checked)")
+
+        logger.info(f"Flight sync complete: matched={result.matched}, updated={result.updated}, skipped={result.skipped}")
+        return result
