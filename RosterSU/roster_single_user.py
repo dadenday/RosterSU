@@ -3283,8 +3283,8 @@ select { padding: 0.4rem 0.6rem; cursor: pointer; }
     color: #44aaff !important;
 }
 
-/* Status cell - Green, centered */
-.api-preview-card td[rowspan="2"] {
+/* Status cell - GREEN, centered, high priority */
+.api-preview-card tbody tr td[rowspan="2"] {
     font-weight: 700 !important;
     text-align: center !important;
     color: #44ff44 !important;
