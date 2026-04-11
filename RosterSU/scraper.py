@@ -8,10 +8,19 @@ cross-references with local DB, and calculates delay adjustments.
 import logging
 import sqlite3
 import json
-import requests
 from dataclasses import dataclass, field
 from typing import Optional
 from datetime import datetime
+
+# Gracefully handle missing requests library
+try:
+    import requests
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    requests = None
+    REQUESTS_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning("requests library not installed - flight sync feature disabled")
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +75,10 @@ class FlightScraper:
         Returns:
             List of ScrapedFlight objects. Empty list on error.
         """
+        if not REQUESTS_AVAILABLE:
+            logger.warning("requests library not available - cannot fetch flights")
+            return []
+            
         try:
             params = {
                 "type": "D",

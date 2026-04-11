@@ -94,7 +94,12 @@ def _ensure_dependencies():
         import rapidfuzz
     except ImportError:
         missing.append("rapidfuzz")
-    
+
+    try:
+        import requests
+    except ImportError:
+        missing.append("requests")
+
     if missing:
         print("=" * 60)
         print("RosterSU - First Time Setup")
