@@ -98,3 +98,173 @@ class FlightScraper:
         except (ValueError, KeyError) as e:
             logger.warning(f"Flight API parse error: {e}")
             return []
+
+
+# ---------------------------------------------------------------------------
+# Time parsing helpers
+# ---------------------------------------------------------------------------
+
+
+def parse_time_hhmm(time_str: str) -> int:
+    """Parse 'HHMM' or 'HHhMM' to total minutes since midnight.
+
+    Examples:
+        '0830' -> 510
+        '08h30' -> 510
+        '1000' -> 600
+    """
+    if not time_str:
+        return 0
+    # Normalize: replace 'h' or ':' with nothing
+    cleaned = time_str.replace("h", "").replace(":", "").strip()
+    if len(cleaned) < 3:
+        return 0
+    # Pad if needed (e.g., "830" -> "0830")
+    cleaned = cleaned.zfill(4)
+    try:
+        hours = int(cleaned[:2])
+        minutes = int(cleaned[2:4])
+        return hours * 60 + minutes
+    except ValueError:
+        return 0
+
+
+def format_time_hhmm_style(total_minutes: int) -> str:
+    """Format total minutes to 'HHhMM' style.
+
+    Examples:
+        510 -> "08h30"
+        600 -> "10h00"
+    """
+    if total_minutes < 0:
+        total_minutes = 0
+    hours = total_minutes // 60
+    minutes = total_minutes % 60
+    return f"{hours:02d}h{minutes:02d}"
+
+
+# ---------------------------------------------------------------------------
+# DelayCalculator
+# ---------------------------------------------------------------------------
+
+
+class DelayCalculator:
+    """Matches scraped flights with DB flights and calculates delay adjustments."""
+
+    @staticmethod
+    def normalize_flight_no(flight_no: str) -> str:
+        """Normalize flight number for matching."""
+        return flight_no.strip().upper()
+
+    def match_flights(
+        self,
+        scraped: list[ScrapedFlight],
+        db_flights: list[dict],
+        db_date: str,
+    ) -> list[MatchResult]:
+        """
+        Match scraped flights with DB flights by normalized flight number.
+
+        Args:
+            scraped: Flights from the API
+            db_flights: Flight dicts from DB's full_data JSON
+            db_date: The work_date (DD.MM.YYYY) for logging
+
+        Returns:
+            List of MatchResult for matched flights.
+        """
+        # Build lookup by normalized flight number
+        db_lookup = {}
+        for db_f in db_flights:
+            call = self.normalize_flight_no(db_f.get("Call", ""))
+            if call:
+                db_lookup[call] = db_f
+
+        results = []
+        for s in scraped:
+            key = self.normalize_flight_no(s.flight_no)
+            if key in db_lookup:
+                db_f = db_lookup[key]
+                db_open = db_f.get("Open", "")
+                db_close = db_f.get("Close", "")
+                if db_open and db_close:  # Skip if missing times
+                    results.append(MatchResult(
+                        scraped=s,
+                        db_flight=db_f,
+                        db_date=db_date,
+                        db_open=db_open,
+                        db_close=db_close,
+                        db_ckrow=db_f.get("ckRow"),
+                    ))
+                else:
+                    logger.info(f"Skipping {key}: missing Open/Close times")
+
+        logger.info(f"Matched {len(results)}/{len(scraped)} scraped flights to DB")
+        return results
+
+    def recalculate(self, match: MatchResult) -> Optional[UpdatedFlight]:
+        """
+        Recalculate open/close times based on delay.
+
+        Logic:
+            duration = db_close - db_open
+            if scheduledTime != estimatedTime:
+                new_open = estimatedTime
+                new_close = new_open + duration
+            else:
+                no change needed (return None)
+
+        Args:
+            match: A matched flight pair
+
+        Returns:
+            UpdatedFlight if changes are needed, else None
+        """
+        s = match.scraped
+        db_open_min = parse_time_hhmm(match.db_open)
+        db_close_min = parse_time_hhmm(match.db_close)
+
+        if db_open_min == 0 or db_close_min == 0:
+            logger.warning(
+                f"Cannot parse times for {s.flight_no}: "
+                f"Open={match.db_open}, Close={match.db_close}"
+            )
+            return None
+
+        duration = db_close_min - db_open_min
+        if duration < 0:
+            logger.warning(
+                f"Negative duration for {s.flight_no}: "
+                f"{match.db_open}-{match.db_close}"
+            )
+            return None
+
+        # Check if there's a delay
+        sched = parse_time_hhmm(s.scheduled_time)
+        estim = parse_time_hhmm(s.estimated_time)
+
+        if sched == estim or estim == 0:
+            # No delay - but still update ckRow if it changed
+            new_ckrow = s.ck_row
+            old_ckrow = match.db_ckrow or ""
+            if new_ckrow and new_ckrow != old_ckrow:
+                return UpdatedFlight(
+                    flight_no=s.flight_no,
+                    new_open=match.db_open,
+                    new_close=match.db_close,
+                    new_ckrow=new_ckrow,
+                    was_delayed=False,
+                )
+            return None  # No changes needed
+
+        # There is a delay - recalculate
+        new_open = estim
+        new_close = new_open + duration
+
+        return UpdatedFlight(
+            flight_no=s.flight_no,
+            new_open=format_time_hhmm_style(new_open),
+            new_close=format_time_hhmm_style(new_close),
+            new_ckrow=s.ck_row,
+            was_delayed=True,
+        )
