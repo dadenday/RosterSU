@@ -6,6 +6,7 @@ cross-references with local DB, and calculates delay adjustments.
 """
 
 import logging
+import sqlite3
 import json
 import requests
 from dataclasses import dataclass, field
@@ -299,9 +300,9 @@ class SyncResult:
 class AutoSyncService:
     """Orchestrates the full scrape -> match -> update pipeline."""
 
-    def __init__(self):
-        self.scraper = FlightScraper()
-        self.calculator = DelayCalculator()
+    def __init__(self, scraper=None, calculator=None):
+        self.scraper = scraper or FlightScraper()
+        self.calculator = calculator or DelayCalculator()
 
     def run_sync(self, db_conn, today_iso: str, today_ddmmyyyy: str) -> SyncResult:
         """
@@ -325,16 +326,24 @@ class AutoSyncService:
             return result
 
         # Step 2: Get today's schedule from DB
-        row = db_conn.execute(
+        cursor = db_conn.execute(
             "SELECT work_date, full_data FROM work_schedule WHERE work_date = ?",
             (today_ddmmyyyy,)
-        ).fetchone()
+        )
+        row = cursor.fetchone()
 
         if not row:
             result.details.append(f"No schedule in DB for {today_ddmmyyyy}")
             return result
 
-        data = json.loads(row["full_data"])
+        # Use positional access for safety (row[1] = full_data)
+        try:
+            data = json.loads(row[1])
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON in DB for {today_ddmmyyyy}: {e}")
+            result.errors += 1
+            result.details.append(f"DB JSON error: {e}")
+            return result
         db_flights = data.get("flights", [])
         if not db_flights:
             result.details.append(f"No flights in DB schedule for {today_ddmmyyyy}")
@@ -377,12 +386,16 @@ class AutoSyncService:
                 db_conn.commit()
                 result.updated = len(updated_flights)
                 result.details.append(f"DB updated: {len(updated_flights)} flights changed")
-            except Exception as e:
+            except sqlite3.Error as e:
                 logger.error(f"DB write error during sync: {e}")
                 result.errors += 1
                 result.details.append(f"DB write error: {e}")
+            except (TypeError, ValueError) as e:
+                logger.error(f"JSON serialization error during sync: {e}")
+                result.errors += 1
+                result.details.append(f"JSON error: {e}")
         else:
             result.details.append(f"No changes needed ({result.skipped} flights checked)")
 
-        logger.info(f"Flight sync complete: matched={result.matched}, updated={result.updated}, skipped={result.skipped}")
+        logger.info(f"Flight sync complete: matched={result.matched}, updated={result.updated}, skipped={result.skipped}, errors={result.errors}")
         return result
