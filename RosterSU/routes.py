@@ -89,28 +89,42 @@ def _run_immediate_flight_sync():
         debug_log(f"Flight sync error: {e}")
 
 
-def _refresh_api_cache():
-    """Fetch today's API data and store in _flight_api_cache."""
+def _refresh_api_cache(days=3):
+    """Fetch API data for today + N future days and store in cache."""
     global _flight_api_cache
-    try:
-        from scraper import FlightScraper
-        now = datetime.now()
-        today_iso = now.strftime("%Y-%m-%d")
-        today_db = now.strftime("%d.%m.%Y")
+    from scraper import FlightScraper
 
-        scraper = FlightScraper()
-        flights = scraper.fetch_departures(today_iso)
+    scraper = FlightScraper()
+    dates_data = {}
 
-        with _flight_api_cache_lock:
-            _flight_api_cache = {
-                "date": today_db,
-                "fetched_at": now.isoformat(),
+    for i in range(days):
+        date = datetime.now() + timedelta(days=i)
+        date_iso = date.strftime("%Y-%m-%d")
+        date_db = date.strftime("%d.%m.%Y")
+
+        try:
+            flights = scraper.fetch_departures(date_iso)
+            dates_data[date_db] = {
+                "fetched_at": datetime.now().isoformat(),
                 "flights": flights,
+                "error": False,
+                "error_message": None,
             }
-        debug_log(f"Flight API cache refreshed: {len(flights)} flights for {today_db}")
-    except Exception as e:
-        _flight_api_cache = {}
-        debug_log(f"Flight API cache refresh error: {e}")
+            debug_log(f"Flight API cache: {len(flights)} flights for {date_db}")
+        except Exception as e:
+            dates_data[date_db] = {
+                "fetched_at": datetime.now().isoformat(),
+                "flights": [],
+                "error": True,
+                "error_message": str(e),
+            }
+            debug_log(f"Flight API cache error for {date_db}: {e}")
+
+    with _flight_api_cache_lock:
+        _flight_api_cache = {
+            "dates": dates_data,
+            "last_refresh": datetime.now().isoformat(),
+        }
 
 
 @rt("/status")
@@ -989,7 +1003,7 @@ def get_flight_preview():
 @rt("/flight/preview/fetch", methods=["post"])
 def post_flight_fetch():
     """Fetch fresh API data and refresh the preview card."""
-    _refresh_api_cache()
+    _refresh_api_cache(days=3)
     bump_db_rev()
     with _flight_api_cache_lock:
         cache_copy = dict(_flight_api_cache)

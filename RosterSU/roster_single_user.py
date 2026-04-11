@@ -3342,10 +3342,10 @@ if __name__ in {"__main__", "builtins"}:
 
     _run_flight_startup_sync()
 
-    # Refresh flight API preview cache at startup
+    # Refresh flight API preview cache at startup (today + 2 future days)
     try:
         import routes
-        routes._refresh_api_cache()
+        routes._refresh_api_cache(days=3)
     except Exception as e:
         debug_log(f"Flight API preview cache startup refresh error: {e}")
 
