@@ -32,6 +32,7 @@ from config import (
     INGEST_INTERVAL,
     MAX_UPLOAD_MB,
     SAFE_THRESHOLD,
+    PROJECT_ROOT,
 )
 from state import (
     try_get_app_status,
@@ -370,6 +371,112 @@ def post_scan():
     return Span("Busy...", cls="st-run", id="status-indicator")
 
 
+@rt("/api/version/check")
+def check_version():
+    """Check for available updates by comparing local and remote versions."""
+    import subprocess
+    
+    version_file = os.path.join(PROJECT_ROOT, "VERSION")
+    
+    # Get local version
+    local_version = "unknown"
+    if os.path.exists(version_file):
+        with open(version_file, 'r') as f:
+            local_version = f.read().strip()
+    
+    # Try to get remote version
+    remote_version = "unknown"
+    has_update = False
+    changes = []
+    error_msg = None
+    
+    try:
+        # Fetch latest changes
+        subprocess.run(
+            ["git", "fetch", "origin"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            timeout=10
+        )
+        
+        # Get current branch
+        branch_result = subprocess.run(
+            ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        current_branch = branch_result.stdout.strip()
+        
+        # Get remote version
+        result = subprocess.run(
+            ["git", "show", f"origin/{current_branch}:VERSION"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        
+        if result.returncode == 0:
+            remote_version = result.stdout.strip()
+            has_update = local_version != remote_version
+        
+        # Get recent changes if there's an update
+        if has_update:
+            log_result = subprocess.run(
+                ["git", "log", f"HEAD..origin/{current_branch}", "--oneline", "--no-merges", "--pretty=format:%s"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if log_result.returncode == 0:
+                changes = [line.strip() for line in log_result.stdout.strip().split('\n') if line.strip()][:10]
+    
+    except subprocess.TimeoutExpired:
+        error_msg = "Timeout checking for updates"
+    except Exception as e:
+        error_msg = str(e)
+    
+    # Build HTML response
+    if error_msg:
+        return Div(
+            P(f"⚠️ {error_msg}", style="color:#ef4444;"),
+            style="padding:0.5rem; background:#1e293b; border-radius:5px;"
+        )
+    
+    if not has_update:
+        return Div(
+            P("✅ Bạn đang sử dụng phiên bản mới nhất!", style="color:#22c55e;"),
+            P(f"Phiên bản: {local_version}", style="font-size:0.8rem; color:var(--muted);"),
+            style="padding:0.5rem; background:#1e293b; border-radius:5px;"
+        )
+    
+    # Has update - show details
+    changes_html = ""
+    if changes:
+        changes_html = Div(
+            P("📝 Các thay đổi:", style="font-weight:500; margin-bottom:0.3rem;"),
+            *[P(f"• {change}", style="font-size:0.8rem; margin:0.2rem 0;") for change in changes],
+            style="margin:0.5rem 0;",
+        )
+    
+    return Div(
+        Div(
+            P("🎉 Có bản cập nhật mới!", style="color:#fbbf24; font-weight:600;"),
+            P(f"Hiện tại: {local_version} → Mới nhất: {remote_version}", style="margin:0.3rem 0;"),
+            changes_html,
+            P(
+                "💡 Chạy lệnh sau để cập nhật:",
+                style="margin-top:0.5rem; font-size:0.8rem;",
+            ),
+            Code("./update.sh", style="background:#0f172a; padding:0.3rem 0.6rem; border-radius:3px; display:block; margin:0.3rem 0;"),
+            style="padding:0.5rem; background:#1e293b; border-radius:5px; border-left:3px solid #fbbf24;",
+        )
+    )
+
+
 @rt("/settings", methods=["get", "post"])
 def settings_page(
     request: Request,
@@ -503,6 +610,33 @@ def settings_page(
 
     content = Div(
         Div(H4("⚙️ Cài đặt"), style="margin-bottom:0.75rem;"),
+        # Version check section
+        Div(
+            Div(
+                H5("📦 Cập nhật phần mềm"),
+                P(
+                    "Kiểm tra và cập nhật phiên bản mới nhất từ repository.",
+                    style="font-size:0.8rem; color:var(--muted); margin-bottom:0.5rem;",
+                ),
+                Div(
+                    Button(
+                        "🔄 Kiểm tra cập nhật",
+                        hx_get="/api/version/check",
+                        hx_target="#version-check-result",
+                        hx_swap="innerHTML",
+                        cls="btn-act",
+                        style="margin-bottom:0.5rem;",
+                    ),
+                    Div(id="version-check-result"),
+                ),
+                P(
+                    "💡 Hoặc chạy lệnh sau trong terminal: ",
+                    Code("./update.sh", style="background:#1e293b; padding:0.2rem 0.4rem; border-radius:3px;"),
+                    style="font-size:0.75rem; color:var(--muted); margin-top:0.5rem;",
+                ),
+                cls="card mb-3",
+            ),
+        ),
         # Unified settings form
         Form(
             # Path configuration section

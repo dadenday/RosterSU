@@ -117,7 +117,38 @@ The application will:
 1. Check for missing dependencies
 2. Install them automatically if needed
 3. Start the web server
-4. Open in your browser (usually http://localhost:5001)
+4. Open in your browser (usually http://localhost:8501)
+
+## Keeping Your App Updated
+
+RosterSU includes an automatic update system to keep you on the latest version.
+
+### Quick Update (Recommended)
+
+```bash
+cd ~/RosterSU
+./update.sh
+```
+
+The update script will:
+- ✅ Check for new versions
+- ✅ Show what's changed
+- ✅ Create a backup
+- ✅ Download and apply updates
+- ✅ Install new dependencies automatically
+
+### Web Interface Update
+
+1. Open the app in your browser
+2. Go to **Settings** (Cài đặt)
+3. Click **"🔄 Kiểm tra cập nhật"**
+4. Follow the instructions
+
+### Version Information
+
+Current version is tracked in the `VERSION` file.
+
+For detailed update instructions, see [UPDATE_GUIDE.md](UPDATE_GUIDE.md).
 
 ## First-Time Setup Flow
 
@@ -209,4 +240,6 @@ Common issues:
 
 ## Version
 
-Current version: See git history
+Current version: **1.3.0** (see `VERSION` file)
+
+See [UPDATE_GUIDE.md](UPDATE_GUIDE.md) for version numbering and update process.
