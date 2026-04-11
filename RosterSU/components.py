@@ -461,9 +461,179 @@ def _recalculate_close(db_open: str, db_close: str, api_open: str) -> str:
 
 def _crosscheck_bay(db_bay: Optional[str], api_gate: str) -> str:
     """Crosscheck bay/gate, prefer API gate.
-    
+
     Fallback to DB bay if API gate is empty/null.
     """
     if api_gate and api_gate.strip():
         return api_gate.strip()
     return db_bay or ""
+
+
+def _match_api_with_db_flights(scraped_flights: list, db_flights: list = None) -> list:
+    """Match scraped API flights with DB flights for today.
+
+    Args:
+        scraped_flights: List of ScrapedFlight from API cache
+        db_flights: Optional list of DB flight dicts. If None, loads from DB.
+
+    Returns list of (db_flight_dict, scraped_flight) tuples.
+    """
+    matched = []
+
+    # Load DB flights if not provided
+    if db_flights is None:
+        from database import get_db
+
+        today_db = datetime.now().strftime("%d.%m.%Y")
+        try:
+            conn = get_db()
+            cursor = conn.execute(
+                "SELECT full_data FROM work_schedule WHERE work_date = ?",
+                (today_db,),
+            )
+            row = cursor.fetchone()
+            conn.close()
+            if row:
+                data = json.loads(row[0])
+                db_flights = data.get("flights", [])
+            else:
+                return []
+        except Exception as e:
+            import logging
+            logging.warning(f"Failed to load DB flights for API preview: {e}")
+            return []
+
+    # Build lookup by normalized call sign
+    db_by_call = {}
+    for f in db_flights:
+        call = f.get("Call", "").strip().upper()
+        if call:
+            db_by_call[call] = f
+
+    # Match
+    for scraped in scraped_flights:
+        call = scraped.flight_no.strip().upper()
+        if call in db_by_call:
+            matched.append((db_by_call[call], scraped))
+
+    return matched
+
+
+def ApiPreviewCard(cache: dict, today_flights: list = None) -> Div:
+    """Render API preview card with cross-referenced flight data.
+
+    Args:
+        cache: Module-level _flight_api_cache dict
+        today_flights: List of (db_flight_dict, scraped_flight) tuples.
+                       If None, attempts to match from cache.
+    """
+    # Empty state
+    if not cache or not cache.get("flights"):
+        return Div(
+            P(
+                "Không có dữ liệu API hôm nay",
+                style="font-size:0.8rem; color:var(--muted);",
+            ),
+            _api_preview_refresh_button(),
+            id="api-preview-card",
+            cls="api-preview-card",
+        )
+
+    # Build matched flights: (db_flight, scraped_flight)
+    if today_flights is None:
+        today_flights = _match_api_with_db_flights(cache.get("flights") or [])
+
+    # Filter past flights
+    current_time = datetime.now().strftime("%H%M")
+    future_flights = []
+    for db_flight, scraped in today_flights:
+        flight_time = scraped.scheduled_time or ""
+        if not flight_time:
+            continue
+        if flight_time >= current_time:
+            future_flights.append((db_flight, scraped))
+
+    # No future flights
+    if not future_flights:
+        return Div(
+            P(
+                "Không có chuyến bay nào còn hoạt động hôm nay",
+                style="font-size:0.8rem; color:var(--muted);",
+            ),
+            _api_preview_refresh_button(),
+            id="api-preview-card",
+            cls="api-preview-card",
+        )
+
+    # Build table rows
+    table_rows = []
+    for db_flight, scraped in future_flights:
+        # Extract values with fallbacks
+        call = db_flight.get("Call", "")
+        db_route = db_flight.get("Route", "")
+        api_route = getattr(scraped, "route", None)
+
+        db_open_raw = db_flight.get("Open", "")
+        db_close_raw = db_flight.get("Close", "")
+
+        # API open time: prefer estimated, fallback to scheduled
+        api_open = scraped.estimated_time or scraped.scheduled_time or ""
+        if api_open:
+            api_open_z = api_open.zfill(4)
+            api_open_formatted = f"{api_open_z[:2]}:{api_open_z[2:]}"
+        else:
+            api_open_formatted = db_open_raw
+
+        # Recalculate close
+        if api_open and db_open_raw and db_close_raw:
+            close = _recalculate_close(db_open_raw, db_close_raw, api_open)
+        else:
+            close = db_close_raw
+
+        status = scraped.status or db_flight.get("Status", "")
+        names = db_flight.get("Names", "")
+        ckrow = scraped.ck_row or db_flight.get("ckRow", "")
+        flight_type = db_flight.get("Type", "")
+        bay = _crosscheck_bay(db_flight.get("Bay"), scraped.gate)
+        route = _crosscheck_route(db_route, api_route)
+
+        # Two rows per flight
+        row1 = Tr(
+            Td(call),
+            Td(api_open_formatted if api_open else "--"),
+            Td(status, rowspan="2"),
+            Td(names),
+            Td(flight_type),
+        )
+        row2 = Tr(
+            Td(route),
+            Td(close if close else "--"),
+            Td(ckrow),
+            Td(bay),
+        )
+        table_rows.append(row1)
+        table_rows.append(row2)
+
+    return Div(
+        Div(
+            Table(
+                Tbody(*table_rows),
+            ),
+            style="overflow-x: auto;",
+        ),
+        _api_preview_refresh_button(),
+        id="api-preview-card",
+        cls="api-preview-card",
+    )
+
+
+def _api_preview_refresh_button() -> Button:
+    """Return the standard refresh button for API preview card."""
+    return Button(
+        "🔄 Cập nhật",
+        hx_post="/flight/preview/fetch",
+        hx_target="#api-preview-card",
+        hx_swap="outerHTML",
+        cls="btn-act",
+        style="width:100%; margin-top:0.5rem;",
+    )
