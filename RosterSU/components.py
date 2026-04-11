@@ -414,3 +414,56 @@ def RosterList(filter_month=None, page=1, count_history_fn=None, load_history_fn
         return Div(pagination, *cards, **htmx)
 
     return Div(*cards, **htmx)
+
+
+# ============================================================================
+# API Preview Card Helpers
+# ============================================================================
+
+def _crosscheck_route(db_route: Optional[str], api_route: Optional[str]) -> str:
+    """Extract destination from route, prefer API if available.
+
+    PQC-HAN -> HAN (destination only)
+    """
+    # Prefer API route
+    route = api_route or db_route or ""
+    if not route:
+        return ""
+    # Extract destination (second part of PQC-HAN)
+    if "-" in route:
+        return route.split("-")[-1].strip()
+    return route.strip()
+
+
+def _recalculate_close(db_open: str, db_close: str, api_open: str) -> str:
+    """Recalculate close time preserving flight duration.
+
+    duration = db_close - db_open
+    new_close = api_open + duration
+    All times in HHMM format.
+    Returns empty string on parse error (caller should handle).
+    """
+    db_open_min = parse_time_to_minutes(db_open)
+    db_close_min = parse_time_to_minutes(db_close)
+    api_open_min = parse_time_to_minutes(api_open)
+
+    if db_open_min is None or db_close_min is None or api_open_min is None:
+        return ""
+
+    def minutes_to_hhmm(m: int) -> str:
+        m = m % 1440  # Handle day wrap
+        return f"{m // 60:02d}:{m % 60:02d}"
+
+    duration = db_close_min - db_open_min
+    new_close_min = api_open_min + duration
+    return minutes_to_hhmm(new_close_min)
+
+
+def _crosscheck_bay(db_bay: Optional[str], api_gate: str) -> str:
+    """Crosscheck bay/gate, prefer API gate.
+    
+    Fallback to DB bay if API gate is empty/null.
+    """
+    if api_gate and api_gate.strip():
+        return api_gate.strip()
+    return db_bay or ""
