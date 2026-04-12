@@ -9,8 +9,93 @@ import os
 import sqlite3
 import json
 from contextlib import contextmanager
-from datetime import datetime
-from typing import Optional, List, Dict
+from datetime import datetime, timedelta
+from typing import Optional, List, Dict, Tuple
+
+
+# ============================================================================
+# Corporation Month Helpers (26th to 25th payroll cycle)
+# ============================================================================
+
+def corp_month_to_date_range(yyyy_mm: str) -> Tuple[str, str]:
+    """Convert a corporation month (YYYY-MM) to actual date range.
+
+    Corporation month is named after its END month (the 25th).
+    Example: "2026-04" means March 26 → April 25.
+
+    Args:
+        yyyy_mm: Month in "YYYY-MM" format (the END month)
+
+    Returns:
+        Tuple of (start_date_iso, end_date_iso) in "YYYY-MM-DD" format
+    """
+    year, month = map(int, yyyy_mm.split("-"))
+
+    # End: 25th of the named month
+    end_date = datetime(year, month, 25)
+
+    # Start: 26th of the previous month
+    if month == 1:
+        start_date = datetime(year - 1, 12, 26)
+    else:
+        start_date = datetime(year, month - 1, 26)
+
+    return start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")
+
+
+def date_to_corp_month(date_iso: str) -> str:
+    """Convert a date to its corporation month label.
+
+    Corporation month is named after the END month (the 25th).
+    Dates from 26th onwards belong to the NEXT month.
+    Dates 1st-25th belong to the CURRENT month.
+
+    Example: "2026-03-26" → "2026-04" (March 26 starts April corp month)
+             "2026-04-10" → "2026-04" (April 10 is in April corp month)
+             "2026-04-25" → "2026-04" (April 25 ends April corp month)
+             "2026-04-26" → "2026-05" (April 26 starts May corp month)
+
+    Args:
+        date_iso: Date in "YYYY-MM-DD" format
+
+    Returns:
+        Corporation month in "YYYY-MM" format (named after end month)
+    """
+    year, month, day = map(int, date_iso.split("-"))
+
+    if day >= 26:
+        # 26th onwards: belongs to NEXT month
+        if month == 12:
+            return f"{year + 1:04d}-01"
+        else:
+            return f"{year:04d}-{month + 1:02d}"
+    else:
+        # 1st-25th: belongs to current month
+        return f"{year:04d}-{month:02d}"
+
+
+def format_corp_month_display(yyyy_mm: str) -> str:
+    """Format a corporation month for display.
+
+    Example: "2026-04" → "Tháng 04.2026 (26/03 - 25/04)"
+
+    Args:
+        yyyy_mm: Month in "YYYY-MM" format (the END month)
+
+    Returns:
+        Human-readable display string
+    """
+    year, month = map(int, yyyy_mm.split("-"))
+
+    # Calculate start month (previous month)
+    if month == 1:
+        start_year = year - 1
+        start_month = 12
+    else:
+        start_year = year
+        start_month = month - 1
+
+    return f"Tháng {month:02d}.{year} (26/{start_month:02d} - 25/{month:02d})"
 
 # Import from config (lazy import to avoid circular dependency)
 _config_loaded = False
@@ -185,20 +270,28 @@ def clear_db():
     debug_log("Database cleared successfully")
 
 def count_history(filter_month=None):
-    """Count total entries for pagination."""
+    """Count total entries for pagination.
+
+    Uses corporation month (26th to 25th) when filter_month is provided.
+    """
     with db_conn() as conn:
         c = conn.cursor()
         where = ""
         params = []
         if filter_month and filter_month != "All":
-            where = "WHERE strftime('%Y-%m', date_iso) = ?"
-            params.append(filter_month)
+            # Convert corporation month to actual date range
+            start_date, end_date = corp_month_to_date_range(filter_month)
+            where = "WHERE date_iso >= ? AND date_iso <= ?"
+            params = [start_date, end_date]
         query = f"SELECT COUNT(*) as cnt FROM work_schedule {where}"
         c.execute(query, params)
         return c.fetchone()['cnt']
 
 def load_history(limit=None, filter_month=None, offset=0):
-    """Fetch entries, sorted by date, with SQL limiting and pagination support."""
+    """Fetch entries, sorted by date, with SQL limiting and pagination support.
+
+    Uses corporation month (26th to 25th) when filter_month is provided.
+    """
     _load_config()
     if limit is None:
         limit = _DEFAULT_HISTORY_LIMIT
@@ -210,10 +303,11 @@ def load_history(limit=None, filter_month=None, offset=0):
             params = []
 
             if filter_month and filter_month != "All":
-                # filter_month expected as "YYYY-MM"
-                where = "WHERE strftime('%Y-%m', date_iso) = ?"
-                params.append(filter_month)
-                debug_log(f"Applied month filter: {filter_month}")
+                # Convert corporation month to actual date range
+                start_date, end_date = corp_month_to_date_range(filter_month)
+                where = "WHERE date_iso >= ? AND date_iso <= ?"
+                params = [start_date, end_date]
+                debug_log(f"Applied corp month filter: {filter_month} ({start_date} to {end_date})")
 
             # SAFE: 'where' is controlled via logic above, params are bound
             query = f"""
@@ -235,11 +329,22 @@ def load_history(limit=None, filter_month=None, offset=0):
             raise
 
 def get_available_months():
-    """Get list of months available in the database."""
+    """Get list of corporation months available in the database.
+
+    Returns corporation months (YYYY-MM) sorted DESC, where each month
+    represents the payroll period from 26th to 25th.
+    """
     with db_conn() as conn:
         c = conn.cursor()
-        c.execute("SELECT DISTINCT strftime('%Y-%m', date_iso) as month FROM work_schedule ORDER BY month DESC")
-        return [r['month'] for r in c.fetchall()]
+        c.execute("SELECT DISTINCT date_iso FROM work_schedule ORDER BY date_iso DESC")
+        dates = [r['date_iso'] for r in c.fetchall()]
+
+    # Convert each date to its corporation month and deduplicate
+    corp_months = set()
+    for date_iso in dates:
+        corp_months.add(date_to_corp_month(date_iso))
+
+    return sorted(corp_months, reverse=True)
 
 
 # ============================================================================

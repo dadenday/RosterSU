@@ -42,7 +42,7 @@ from state import (
     bump_db_rev,
     SHUTDOWN_EVENT,
 )
-from database import get_available_months, clear_db, delete_entries
+from database import get_available_months, clear_db, delete_entries, format_corp_month_display
 from export import generate_ical_content, generate_csv_content
 from components import (
     format_date_vn,
@@ -204,7 +204,7 @@ def get():
     # Build options with "All" first, then mark default month as selected
     all_opt = Option("Tất cả tháng", value="All")
     month_opts = [all_opt] + [
-        Option(m, value=m, selected=(m == default_month)) for m in months
+        Option(format_corp_month_display(m), value=m, selected=(m == default_month)) for m in months
     ]
 
     # Initial RosterList with default month filter

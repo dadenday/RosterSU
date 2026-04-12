@@ -85,7 +85,8 @@ class FlightScraper:
             params = {
                 "type": "D",
                 "date": date,
-                "limit": 100,
+                # NOTE: limit=100 causes API to exclude some flights (e.g., ZF2602).
+                # Omitting limit returns the correct dataset (61 flights for 2026-04-13).
             }
             resp = requests.get(API_BASE_URL, params=params, timeout=REQUEST_TIMEOUT)
             resp.raise_for_status()
