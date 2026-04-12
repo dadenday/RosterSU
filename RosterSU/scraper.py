@@ -39,6 +39,8 @@ class ScrapedFlight:
     gate: str                # e.g., "9"
     status: str              # e.g., "DEPARTED"
     route: str               # e.g., "PQC-ICN"
+    notes_en: str = ""       # e.g., "CHECK-IN 14:25"
+    notes_vn: str = ""       # e.g., "LÀM THỦ TỤC LÚC 14:25"
 
 
 @dataclass
@@ -105,6 +107,8 @@ class FlightScraper:
                     gate=item.get("gate", ""),
                     status=item.get("notesEn", "") or item.get("status", ""),
                     route=item.get("route", ""),
+                    notes_en=item.get("notesEn", "") or "",
+                    notes_vn=item.get("notesVn", "") or "",
                 ))
             logger.info(f"Fetched {len(flights)} departures for {date}")
             return flights
@@ -118,6 +122,63 @@ class FlightScraper:
         except (ValueError, KeyError) as e:
             logger.warning(f"Flight API parse error: {e}")
             return []
+
+    def get_flights_with_cache(self, date_iso: str) -> list[tuple[ScrapedFlight, Optional[dict]]]:
+        """Fetch API departures and merge with cached status data.
+
+        Used ONLY by the API preview card. Falls back to disk cache
+        when API is unavailable. Does NOT write to DB.
+        """
+        from status_cache import (
+            get_cached_flight,
+            get_flights_for_date,
+            remove_past_flights,
+        )
+
+        # Clean up departed flights from cache
+        current_time = datetime.now().strftime("%H%M")
+        try:
+            removed = remove_past_flights(current_time)
+            if removed > 0:
+                logger.info(f"Removed {removed} past flights from cache")
+        except Exception as e:
+            logger.warning(f"Failed to clean past flights from cache: {e}")
+
+        # Fetch API data
+        api_flights = self.fetch_departures(date_iso)
+
+        if api_flights:
+            # Merge API flights with cached status data
+            results = []
+            for api_flight in api_flights:
+                cached = get_cached_flight(date_iso, api_flight.flight_no)
+                results.append((api_flight, cached))
+            logger.info(f"API fetch: {len(results)} flights for {date_iso} ({sum(1 for _, c in results if c)} have cache)")
+            return results
+        else:
+            # API empty/timeout — fall back to disk cache for display
+            cached_flights = get_flights_for_date(date_iso)
+            if cached_flights:
+                results = []
+                for cf in cached_flights:
+                    sf = ScrapedFlight(
+                        flight_no=cf.get("flight_no", ""),
+                        scheduled_time=cf.get("status_time", ""),
+                        estimated_time=cf.get("status_time", ""),
+                        actual_time=None,
+                        ck_row=cf.get("ck_row", ""),
+                        gate=cf.get("gate", ""),
+                        status=cf.get("status", ""),
+                        route=cf.get("route", ""),
+                        notes_en=cf.get("notes_en", ""),
+                        notes_vn=cf.get("notes_vn", ""),
+                    )
+                    results.append((sf, cf))
+                logger.info(f"API empty, using {len(results)} cached flights for {date_iso}")
+                return results
+            else:
+                logger.info(f"No API or cached data for {date_iso}")
+                return []
 
 
 # ---------------------------------------------------------------------------
@@ -371,17 +432,12 @@ class AutoSyncService:
         matches = self.calculator.match_flights(scraped, db_flights, today_ddmmyyyy)
         result.matched = len(matches)
 
-        # Step 4: Recalculate and apply updates
-        updated_flights = []
+        # Step 4: Recalculate (display-only, DO NOT write to DB)
+        recalculated = []
         for match in matches:
             updated = self.calculator.recalculate(match)
             if updated:
-                # Update the original db_flight dict
-                match.db_flight["Open"] = updated.new_open
-                match.db_flight["Close"] = updated.new_close
-                match.db_flight["ckRow"] = updated.new_ckrow
-                updated_flights.append(match.db_flight)
-
+                recalculated.append(updated)
                 delay_tag = "DELAY" if updated.was_delayed else "ckRow"
                 result.details.append(
                     f"{delay_tag} {updated.flight_no}: "
@@ -392,26 +448,10 @@ class AutoSyncService:
             else:
                 result.skipped += 1
 
-        # Step 5: Write back to DB if any changes
-        if updated_flights:
-            try:
-                data["flights"] = db_flights  # Already mutated in-place
-                new_json = json.dumps(data, ensure_ascii=False, default=str)
-                db_conn.execute(
-                    "UPDATE work_schedule SET full_data = ?, last_updated = CURRENT_TIMESTAMP WHERE work_date = ?",
-                    (new_json, today_ddmmyyyy)
-                )
-                db_conn.commit()
-                result.updated = len(updated_flights)
-                result.details.append(f"DB updated: {len(updated_flights)} flights changed")
-            except sqlite3.Error as e:
-                logger.error(f"DB write error during sync: {e}")
-                result.errors += 1
-                result.details.append(f"DB write error: {e}")
-            except (TypeError, ValueError) as e:
-                logger.error(f"JSON serialization error during sync: {e}")
-                result.errors += 1
-                result.details.append(f"JSON error: {e}")
+        # Step 5: DO NOT write back to DB — API data is display-only
+        # DB is populated exclusively by Excel roster file parsers
+        if recalculated:
+            result.details.append(f"{len(recalculated)} flights recalculated (display-only, DB untouched)")
         else:
             result.details.append(f"No changes needed ({result.skipped} flights checked)")
 

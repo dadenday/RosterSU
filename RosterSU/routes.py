@@ -66,7 +66,11 @@ _flight_api_cache_lock = threading.Lock()
 
 
 def _refresh_api_cache(days=3):
-    """Fetch API data for today + N future days and store in cache."""
+    """Fetch API data for today + N future days and store in cache.
+    
+    Uses status_cache.json as fallback when API is unavailable.
+    Merges cached status times with API data for display in preview card.
+    """
     global _flight_api_cache
     from scraper import FlightScraper
 
@@ -79,21 +83,49 @@ def _refresh_api_cache(days=3):
         date_db = date.strftime("%d.%m.%Y")
 
         try:
-            flights = scraper.fetch_departures(date_iso)
+            # Use cache-aware method that merges API + disk cache
+            scraped_with_cache = scraper.get_flights_with_cache(date_iso)
             dates_data[date_db] = {
                 "fetched_at": datetime.now().isoformat(),
-                "flights": flights,
+                "flights": scraped_with_cache,
                 "error": False,
                 "error_message": None,
             }
-            debug_log(f"Flight API cache: {len(flights)} flights for {date_db}")
+            cached_count = sum(1 for _, c in scraped_with_cache if c)
+            debug_log(f"Flight API cache: {len(scraped_with_cache)} flights for {date_db} ({cached_count} from status cache)")
         except Exception as e:
-            dates_data[date_db] = {
-                "fetched_at": datetime.now().isoformat(),
-                "flights": [],
-                "error": True,
-                "error_message": str(e),
-            }
+            # Fallback: load from disk cache even when API is down
+            try:
+                from status_cache import get_flights_for_date
+                from scraper import ScrapedFlight
+                cached_flights = get_flights_for_date(date_iso)
+                fallback = []
+                for cf in cached_flights:
+                    sf = ScrapedFlight(
+                        flight_no=cf.get("flight_no", ""),
+                        scheduled_time=cf.get("status_time", ""),
+                        estimated_time=cf.get("status_time", ""),
+                        actual_time=None,
+                        ck_row=cf.get("ck_row", ""),
+                        gate=cf.get("gate", ""),
+                        status=cf.get("status", ""),
+                        route=cf.get("route", ""),
+                    )
+                    fallback.append((sf, cf))
+                dates_data[date_db] = {
+                    "fetched_at": datetime.now().isoformat(),
+                    "flights": fallback,
+                    "error": len(fallback) == 0,
+                    "error_message": f"API unavailable: {e}" if not fallback else None,
+                }
+                debug_log(f"Flight API fallback cache: {len(fallback)} flights for {date_db}")
+            except Exception as e2:
+                dates_data[date_db] = {
+                    "fetched_at": datetime.now().isoformat(),
+                    "flights": [],
+                    "error": True,
+                    "error_message": f"API error: {e}, cache error: {e2}",
+                }
             debug_log(f"Flight API cache error for {date_db}: {e}")
 
     with _flight_api_cache_lock:
