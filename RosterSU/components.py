@@ -435,6 +435,46 @@ def _crosscheck_route(db_route: Optional[str], api_route: Optional[str]) -> str:
     return route.strip()
 
 
+def _extract_checkin_time_from_notes(notes_en: str, notes_vn: str) -> Optional[str]:
+    """Extract check-in time from notesEn or notesVn.
+    
+    Only extracts time from messages like "CHECK-IN 14:25" or "LÀM THỦ TỤC LÚC 14:25".
+    Returns None for live status messages like "ĐANG LÀM THỦ TỤC", "ĐÃ CẤT CÁNH", etc.
+    
+    Args:
+        notes_en: English notes (e.g., "CHECK-IN 14:25" or "DEPARTED")
+        notes_vn: Vietnamese notes (e.g., "LÀM THỦ TỤC LÚC 14:25" or "ĐÃ CẤT CÁNH")
+    
+    Returns:
+        Time in HHMM format (e.g., "1425") or None if not found.
+    """
+    import re
+    
+    # Try notes_vn first (has "LÚC" marker), then notes_en
+    notes = notes_vn or notes_en or ""
+    if not notes:
+        return None
+    
+    # Only extract time if it contains "LÚC" (Vietnamese) or follows "CHECK-IN HH:MM" pattern
+    # This filters out live status like "ĐANG LÀM THỦ TỤC", "ĐÃ CẤT CÁNH", etc.
+    if "LÚC" in notes.upper():
+        # Vietnamese: "LÀM THỦ TỤC LÚC 14:25"
+        match = re.search(r'LÚC\s+(\d{1,2})[:h](\d{2})', notes, re.IGNORECASE)
+        if match:
+            hours = int(match.group(1))
+            minutes = int(match.group(2))
+            return f"{hours:02d}{minutes:02d}"
+    elif re.match(r'CHECK-IN\s+\d{1,2}[:h]\d{2}', notes, re.IGNORECASE):
+        # English: "CHECK-IN 14:25"
+        match = re.search(r'(\d{1,2})[:h](\d{2})', notes)
+        if match:
+            hours = int(match.group(1))
+            minutes = int(match.group(2))
+            return f"{hours:02d}{minutes:02d}"
+    
+    return None
+
+
 def _recalculate_close(db_open: str, db_close: str, api_open: str) -> str:
     """Recalculate close time preserving flight duration.
 
@@ -500,7 +540,10 @@ def ApiPreviewCard(cache: dict, days: int = 3) -> Div:
     """Render API preview card with cross-referenced flight data for multiple days.
 
     Args:
-        cache: Module-level _flight_api_cache dict with "dates" key
+        cache: Module-level _flight_api_cache dict with "dates" key.
+               Flights can be:
+               - list[ScrapedFlight] (original format)
+               - list[tuple[ScrapedFlight, cached_data_or_None]] (cache-aware format)
         days: Number of days to show (default 3: today + 2 future)
     """
     dates_data = cache.get("dates", {})
@@ -551,20 +594,34 @@ def ApiPreviewCard(cache: dict, days: int = 3) -> Div:
                 db_by_call[call] = f
 
         matched = []
-        for scraped in day_data["flights"]:
+        flights_data = day_data["flights"]
+
+        for flight_entry in flights_data:
+            # Handle new tuple format: (ScrapedFlight, cached_data_or_None)
+            if isinstance(flight_entry, tuple) and len(flight_entry) == 2:
+                scraped, cached = flight_entry
+            else:
+                # Original format: just ScrapedFlight
+                scraped = flight_entry
+                cached = None
+
             call = scraped.flight_no.strip().upper()
             if call in db_by_call:
-                matched.append((db_by_call[call], scraped))
+                matched.append((db_by_call[call], scraped, cached))
 
         # Filter past flights (only for today)
         if i == 0:  # Today - filter past
             future_flights = []
-            for db_flight, scraped in matched:
-                flight_time = scraped.scheduled_time or ""
+            for db_flight, scraped, cached in matched:
+                flight_time = ""
+                if cached and cached.get("status_time"):
+                    flight_time = cached["status_time"]
+                else:
+                    flight_time = scraped.scheduled_time or ""
                 if not flight_time:
                     continue
                 if flight_time >= current_time:
-                    future_flights.append((db_flight, scraped))
+                    future_flights.append((db_flight, scraped, cached))
             matched = future_flights
         # Future days - show all flights
 
@@ -572,9 +629,9 @@ def ApiPreviewCard(cache: dict, days: int = 3) -> Div:
         if not matched:
             continue
 
-        # Build table rows (same as before)
+        # Build table rows
         table_rows = []
-        for db_flight, scraped in matched:
+        for db_flight, scraped, cached in matched:
             call = db_flight.get("Call", "")
             db_route = db_flight.get("Route", "")
             api_route = getattr(scraped, "route", None)
@@ -582,27 +639,68 @@ def ApiPreviewCard(cache: dict, days: int = 3) -> Div:
             db_open_raw = db_flight.get("Open", "")
             db_close_raw = db_flight.get("Close", "")
 
-            api_open = scraped.estimated_time or scraped.scheduled_time or ""
+            # Get notes from scraped or cached data
+            notes_en = getattr(scraped, "notes_en", "") or (cached.get("notes_en", "") if cached else "")
+            notes_vn = getattr(scraped, "notes_vn", "") or (cached.get("notes_vn", "") if cached else "")
+            
+            # Extract check-in time from notes
+            notes_checkin_time = _extract_checkin_time_from_notes(notes_en, notes_vn)
+
+            # Determine open time: 
+            # 1. If DB open doesn't align with notes check-in time, use notes time
+            # 2. Otherwise prefer cached status_time, then API times
+            api_open = ""
+            is_from_cache = False
+            
+            if notes_checkin_time:
+                # Check if DB open aligns with notes
+                db_open_min = parse_time_to_minutes(db_open_raw)
+                notes_open_min = parse_time_to_minutes(notes_checkin_time)
+                
+                if db_open_min is not None and notes_open_min is not None:
+                    # If they differ by more than 5 minutes, use notes time
+                    if abs(db_open_min - notes_open_min) > 5:
+                        api_open = notes_checkin_time
+            
+            # Fallback to existing logic if notes didn't provide a time
+            if not api_open:
+                if cached and cached.get("status_time"):
+                    api_open = cached["status_time"]
+                    is_from_cache = True
+                else:
+                    api_open = scraped.estimated_time or scraped.scheduled_time or ""
+
             if api_open:
                 api_open_z = api_open.zfill(4)
                 api_open_formatted = f"{api_open_z[:2]}:{api_open_z[2:]}"
             else:
                 api_open_formatted = db_open_raw
 
+            # Recalculate close for display only (never touches DB)
             if api_open and db_open_raw and db_close_raw:
                 close = _recalculate_close(db_open_raw, db_close_raw, api_open)
             else:
                 close = db_close_raw
 
-            status = scraped.status or db_flight.get("Status", "")
+            # Status: show notesVn value, fallback to regular status
+            status = notes_vn or (cached.get("status", "") if cached else (scraped.status or db_flight.get("Status", "")))
             names = db_flight.get("Names", "")
-            ckrow = scraped.ck_row or db_flight.get("ckRow", "")
+            ckrow = cached.get("ck_row", "") if cached else (scraped.ck_row or db_flight.get("ckRow", ""))
             flight_type = db_flight.get("Type", "")
-            bay = _crosscheck_bay(db_flight.get("Bay"), scraped.gate)
-            route = _crosscheck_route(db_route, api_route)
+            bay = _crosscheck_bay(db_flight.get("Bay"), cached.get("gate", "") if cached else scraped.gate)
+            route = _crosscheck_route(db_route, cached.get("route", "") if cached else api_route)
+
+            # Cache indicator badge
+            cache_badge = ""
+            if is_from_cache:
+                cache_badge = Span(
+                    "💾",
+                    style="font-size:0.6rem; margin-left:0.2rem; opacity:0.6;",
+                    title="From status cache",
+                )
 
             row1 = Tr(
-                Td(call),
+                Td(Span(call), cache_badge),
                 Td(api_open_formatted if api_open else "--"),
                 Td(status, rowspan="2"),
                 Td(names),

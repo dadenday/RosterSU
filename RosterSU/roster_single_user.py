@@ -3465,15 +3465,21 @@ if __name__ in {"__main__", "builtins"}:
     debug_log(f"Debug mode is {'enabled' if DEBUG_ENABLED else 'disabled'}", "MAIN")
     init_db()
 
-    # --- Flight Delay Auto-Sync ---
+    # --- Flight Delay Auto-Sync + API Preview Card ---
     def _run_flight_startup_sync():
-        """Run flight sync at startup if enabled. Non-blocking, logs results."""
+        """Run flight sync + API preview cache refresh at startup if enabled.
+        
+        AutoSyncService: matches API data with DB flights, recalculates times (display-only).
+        API preview cache: fetched in background thread so timeout doesn't block startup.
+        Both are gated by enable_flight_sync config.
+        """
         try:
             merged = _load_merged_config()
             if not merged.get("enable_flight_sync", False):
                 debug_log("Flight sync: disabled in config, skipping")
                 return
 
+            # Part 1: AutoSync — match API with DB, recalculate times (display-only)
             from scraper import AutoSyncService
             from database import get_db
 
@@ -3492,18 +3498,23 @@ if __name__ in {"__main__", "builtins"}:
             # Bump revision to trigger UI refresh
             from state import bump_db_rev
             bump_db_rev()
+
+            # Part 2: API preview cache — run in background to avoid blocking
+            def _refresh_api_preview_cache():
+                try:
+                    import routes
+                    routes._refresh_api_cache(days=3)
+                    debug_log("Flight API preview cache: refreshed (today + 2 days)")
+                except Exception as e:
+                    debug_log(f"Flight API preview cache startup refresh error: {e}")
+
+            threading.Thread(target=_refresh_api_preview_cache, daemon=True).start()
+
         except Exception as e:
             debug_log(f"Flight sync startup error: {e}")
             # Do NOT crash -- app continues without sync
 
     _run_flight_startup_sync()
-
-    # Refresh flight API preview cache at startup (today + 2 future days)
-    try:
-        import routes
-        routes._refresh_api_cache(days=3)
-    except Exception as e:
-        debug_log(f"Flight API preview cache startup refresh error: {e}")
 
     os.makedirs(PROCESSED_ARCHIVE_DIR, exist_ok=True)
     threading.Thread(target=run_auto_ingest, daemon=True).start()
