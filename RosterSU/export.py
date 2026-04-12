@@ -45,22 +45,25 @@ def export_snapshot(scope="current_month", count=5):
     """
     if _load_history is None:
         raise RuntimeError("Export module not initialized. Call init_exports() first.")
-    
+
     if scope == "all":
         # Load all history (use large limit)
         return _load_history(limit=9999)
     elif scope == "current_month":
+        # Use corporation month (26th to 25th)
+        from database import date_to_corp_month
         now = datetime.now()
-        month_str = now.strftime("%Y-%m")
+        month_str = date_to_corp_month(now.strftime("%Y-%m-%d"))
         return _load_history(limit=9999, filter_month=month_str)
     elif scope == "latest":
         return _load_history(limit=1)
     elif scope == "latest_n":
         return _load_history(limit=max(1, count))
     else:
-        # Fallback to current month
+        # Fallback to current corporation month
+        from database import date_to_corp_month
         now = datetime.now()
-        month_str = now.strftime("%Y-%m")
+        month_str = date_to_corp_month(now.strftime("%Y-%m-%d"))
         return _load_history(limit=9999, filter_month=month_str)
 
 

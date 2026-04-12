@@ -536,6 +536,81 @@ def _load_db_flights_for_date(date_db: str) -> list:
         return []
 
 
+def _compact_status_lines(status_text: str) -> Div:
+    """Break status text into compact lines for the rowspan=2 cell.
+
+    Splits text to fit within 2 table rows while keeping it readable.
+    Examples:
+        "LÀM THỦ TỤC LÚC 14:25" → "LÀM THỦ<br>TỤC LÚC<br>14:25"
+        "ĐANG LÀM THỦ TỤC" → "ĐANG LÀM<br>THỦ TỤC"
+        "CHECK-IN 14:25" → "CHECK-IN<br>14:25"
+
+    Args:
+        status_text: Raw status string
+
+    Returns:
+        Div with <br>-separated content for HTML rendering
+    """
+    if not status_text:
+        return Div("--", style="opacity:0.4;")
+
+    # Normalize whitespace
+    text = status_text.strip()
+
+    # If already short (fits in 2 rows), keep as-is
+    if len(text) <= 15:
+        return Div(text)
+
+    # Split "LÀM THỦ TỤC LÚC HH:MM" pattern
+    import re
+    match = re.match(r'(LÀM THỦ TỤC)\s+LÚC\s+(\d{1,2}[:h]\d{2})', text, re.IGNORECASE)
+    if match:
+        action = match.group(1)  # "LÀM THỦ TỤC"
+        time_val = match.group(2)
+        # Split into 3 compact lines
+        words = action.split()
+        if len(words) >= 2:
+            line1 = words[0]  # "LÀM"
+            line2 = " ".join(words[1:]) + " LÚC"  # "THỦ TỤC LÚC"
+            line3 = time_val  # "14:25"
+            return Div(
+                Span(line1),
+                Br(),
+                Span(line2),
+                Br(),
+                Span(line3, style="font-weight:800;"),
+            )
+
+    # Split "CHECK-IN HH:MM" pattern
+    match = re.match(r'CHECK-IN\s+(\d{1,2}[:h]\d{2})', text, re.IGNORECASE)
+    if match:
+        return Div(
+            Span("CHECK-IN"),
+            Br(),
+            Span(match.group(1), style="font-weight:800;"),
+        )
+
+    # Generic fallback: split into chunks of ~12 chars
+    if len(text) > 15:
+        chunks = []
+        for i in range(0, len(text), 12):
+            chunk = text[i:i+12]
+            # Try to break at word boundary
+            if i + 12 < len(text):
+                space_pos = chunk.rfind(' ')
+                if space_pos > 4:
+                    chunk = chunk[:space_pos]
+            chunks.append(chunk)
+        elements = []
+        for i, chunk in enumerate(chunks):
+            if i > 0:
+                elements.append(Br())
+            elements.append(Span(chunk))
+        return Div(*elements)
+
+    return Div(text)
+
+
 def ApiPreviewCard(cache: dict, days: int = 3) -> Div:
     """Render API preview card with cross-referenced flight data for multiple days.
 
@@ -646,30 +721,22 @@ def ApiPreviewCard(cache: dict, days: int = 3) -> Div:
             # Extract check-in time from notes
             notes_checkin_time = _extract_checkin_time_from_notes(notes_en, notes_vn)
 
-            # Determine open time: 
-            # 1. If DB open doesn't align with notes check-in time, use notes time
-            # 2. Otherwise prefer cached status_time, then API times
+            # Determine open time:
+            # Priority: notes check-in time > cached status_time > DB open
+            # NOTE: DO NOT use scraped.scheduled_time/estimated_time — those are
+            # departure times, NOT check-in times!
             api_open = ""
             is_from_cache = False
-            
-            if notes_checkin_time:
-                # Check if DB open aligns with notes
-                db_open_min = parse_time_to_minutes(db_open_raw)
-                notes_open_min = parse_time_to_minutes(notes_checkin_time)
-                
-                if db_open_min is not None and notes_open_min is not None:
-                    # If they differ by more than 5 minutes, use notes time
-                    if abs(db_open_min - notes_open_min) > 5:
-                        api_open = notes_checkin_time
-            
-            # Fallback to existing logic if notes didn't provide a time
-            if not api_open:
-                if cached and cached.get("status_time"):
-                    api_open = cached["status_time"]
-                    is_from_cache = True
-                else:
-                    api_open = scraped.estimated_time or scraped.scheduled_time or ""
 
+            if notes_checkin_time:
+                # Always use notes check-in time when available
+                api_open = notes_checkin_time
+            elif cached and cached.get("status_time"):
+                # Fallback to cached status time
+                api_open = cached["status_time"]
+                is_from_cache = True
+
+            # If no API/cache time found, use DB open time as-is
             if api_open:
                 api_open_z = api_open.zfill(4)
                 api_open_formatted = f"{api_open_z[:2]}:{api_open_z[2:]}"
@@ -684,6 +751,8 @@ def ApiPreviewCard(cache: dict, days: int = 3) -> Div:
 
             # Status: show notesVn value, fallback to regular status
             status = notes_vn or (cached.get("status", "") if cached else (scraped.status or db_flight.get("Status", "")))
+            # Break status text into compact lines for the rowspan=2 cell
+            status_lines = _compact_status_lines(status)
             names = db_flight.get("Names", "")
             ckrow = cached.get("ck_row", "") if cached else (scraped.ck_row or db_flight.get("ckRow", ""))
             flight_type = db_flight.get("Type", "")
@@ -702,7 +771,7 @@ def ApiPreviewCard(cache: dict, days: int = 3) -> Div:
             row1 = Tr(
                 Td(Span(call), cache_badge),
                 Td(api_open_formatted if api_open else "--"),
-                Td(status, rowspan="2"),
+                Td(status_lines, rowspan="2"),
                 Td(names),
                 Td(flight_type),
             )
