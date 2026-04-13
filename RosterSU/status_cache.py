@@ -38,6 +38,10 @@ logger = logging.getLogger(__name__)
 CACHE_FILE = Path(__file__).parent / "status_cache.json"
 _cache_lock = threading.Lock()
 
+# Cache entry TTL (time-to-live) in minutes
+# Flight status data should refresh every 5-10 minutes
+CACHE_TTL_MINUTES = 10
+
 
 def _load_cache_raw() -> dict:
     """Load raw cache from disk. Returns empty dict on error."""
@@ -48,6 +52,25 @@ def _load_cache_raw() -> dict:
     except (json.JSONDecodeError, OSError) as e:
         logger.warning(f"Failed to load status cache: {e}")
     return {}
+
+
+def _is_cache_stale(cached_at: str, ttl_minutes: int = CACHE_TTL_MINUTES) -> bool:
+    """Check if a cache entry is stale based on its timestamp.
+
+    Args:
+        cached_at: ISO timestamp when cache was written
+        ttl_minutes: Time-to-live in minutes
+
+    Returns:
+        True if cache entry is older than TTL
+    """
+    try:
+        cached_time = datetime.fromisoformat(cached_at)
+        age = datetime.now() - cached_time
+        return age.total_seconds() > (ttl_minutes * 60)
+    except (ValueError, TypeError):
+        # If we can't parse the timestamp, consider it stale
+        return True
 
 
 def _save_cache_raw(cache: dict) -> None:
@@ -62,18 +85,38 @@ def _save_cache_raw(cache: dict) -> None:
 def get_cached_flight(date_iso: str, flight_no: str) -> Optional[dict]:
     """
     Get cached status data for a specific flight on a specific date.
-    
+
+    Returns None if:
+    - Not found in cache
+    - Cache entry is stale (older than TTL)
+
     Args:
         date_iso: ISO date (YYYY-MM-DD)
         flight_no: Flight number (e.g., "VN123")
-    
+
     Returns:
-        Cached flight dict or None if not found.
+        Cached flight dict or None if not found or stale.
     """
     with _cache_lock:
         cache = _load_cache_raw()
         date_data = cache.get(date_iso, {})
-        return date_data.get(flight_no.upper())
+        flight_data = date_data.get(flight_no.upper())
+
+        if flight_data is None:
+            return None
+
+        # Check if cache entry is stale
+        cached_at = flight_data.get("cached_at")
+        if cached_at and _is_cache_stale(cached_at):
+            logger.debug(f"Cache stale for {flight_no} on {date_iso} (cached at {cached_at})")
+            # Remove stale entry
+            del date_data[flight_no.upper()]
+            if not date_data:
+                del cache[date_iso]
+            _save_cache_raw(cache)
+            return None
+
+        return flight_data
 
 
 def save_flight_status(
@@ -90,10 +133,16 @@ def save_flight_status(
     """
     Save status data for a flight.
 
+    This will overwrite any existing cached data for this flight,
+    effectively refreshing the cache entry.
+
     Args:
         date_iso: ISO date (YYYY-MM-DD)
         flight_no: Flight number
         status_time: Time from status in HHMM format (e.g., "0830")
+                     **IMPORTANT**: This should be the CHECK-IN OPEN TIME extracted
+                     from notes_en (e.g., "CHECK-IN 14:25" → "1425"), NOT the
+                     scheduled/estimated departure time.
         status: Flight status (e.g., "CHECK-IN", "BOARDING", "DEPARTED")
         gate: Gate number
         ck_row: Check-in row
@@ -228,3 +277,44 @@ def get_flights_for_date(date_iso: str) -> list[dict]:
     with _cache_lock:
         cache = _load_cache_raw()
         return list(cache.get(date_iso, {}).values())
+
+
+def cleanup_stale_entries() -> int:
+    """
+    Remove all stale cache entries across all dates.
+
+    Returns:
+        Number of entries removed.
+    """
+    removed_count = 0
+
+    with _cache_lock:
+        cache = _load_cache_raw()
+        dates_to_clean = []
+
+        for date_iso in list(cache.keys()):
+            flights = cache[date_iso]
+            flights_to_remove = []
+
+            for flight_no, flight_data in flights.items():
+                cached_at = flight_data.get("cached_at")
+                if cached_at and _is_cache_stale(cached_at):
+                    flights_to_remove.append(flight_no)
+
+            for flight_no in flights_to_remove:
+                del flights[flight_no]
+                removed_count += 1
+                logger.debug(f"Cleaned stale cache for {flight_no} on {date_iso}")
+
+            # Mark empty dates for cleanup
+            if not flights:
+                dates_to_clean.append(date_iso)
+
+        for date_iso in dates_to_clean:
+            del cache[date_iso]
+
+        if removed_count > 0:
+            _save_cache_raw(cache)
+            logger.info(f"Cache cleanup: removed {removed_count} stale entries")
+
+        return removed_count

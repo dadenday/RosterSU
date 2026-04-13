@@ -437,24 +437,24 @@ def _crosscheck_route(db_route: Optional[str], api_route: Optional[str]) -> str:
 
 def _extract_checkin_time_from_notes(notes_en: str, notes_vn: str) -> Optional[str]:
     """Extract check-in time from notesEn or notesVn.
-    
+
     Only extracts time from messages like "CHECK-IN 14:25" or "LÀM THỦ TỤC LÚC 14:25".
     Returns None for live status messages like "ĐANG LÀM THỦ TỤC", "ĐÃ CẤT CÁNH", etc.
-    
+
     Args:
         notes_en: English notes (e.g., "CHECK-IN 14:25" or "DEPARTED")
         notes_vn: Vietnamese notes (e.g., "LÀM THỦ TỤC LÚC 14:25" or "ĐÃ CẤT CÁNH")
-    
+
     Returns:
         Time in HHMM format (e.g., "1425") or None if not found.
     """
     import re
-    
+
     # Try notes_vn first (has "LÚC" marker), then notes_en
     notes = notes_vn or notes_en or ""
     if not notes:
         return None
-    
+
     # Only extract time if it contains "LÚC" (Vietnamese) or follows "CHECK-IN HH:MM" pattern
     # This filters out live status like "ĐANG LÀM THỦ TỤC", "ĐÃ CẤT CÁNH", etc.
     if "LÚC" in notes.upper():
@@ -471,8 +471,63 @@ def _extract_checkin_time_from_notes(notes_en: str, notes_vn: str) -> Optional[s
             hours = int(match.group(1))
             minutes = int(match.group(2))
             return f"{hours:02d}{minutes:02d}"
-    
+
     return None
+
+
+def _calculate_delayed_checkin(
+    db_open: str,
+    scheduled_time: str,
+    estimated_time: str,
+) -> Optional[str]:
+    """Calculate delayed check-in open time based on departure delay.
+
+    When the API doesn't provide an explicit check-in time in notesEn/notesVn,
+    we calculate it by applying the same delay offset to the original check-in time.
+
+    Formula:
+        delay = estimatedTime - scheduledTime
+        new_checkin = db_open + delay
+
+    Args:
+        db_open: Original check-in open time from DB (e.g., "09:10" or "09h10")
+        scheduled_time: Original departure time from API (e.g., "1210")
+        estimated_time: Updated departure time from API (e.g., "1350")
+
+    Returns:
+        New check-in open time in HHMM format, or None if calculation fails.
+    """
+    if not scheduled_time or not estimated_time or not db_open:
+        return None
+
+    # Parse times to minutes
+    def to_minutes(t: str) -> Optional[int]:
+        t = t.replace("h", "").replace(":", "").strip()
+        if len(t) < 3:
+            return None
+        t = t.zfill(4)
+        try:
+            return int(t[:2]) * 60 + int(t[2:4])
+        except ValueError:
+            return None
+
+    db_open_min = to_minutes(db_open)
+    sched_min = to_minutes(scheduled_time)
+    estim_min = to_minutes(estimated_time)
+
+    if db_open_min is None or sched_min is None or estim_min is None:
+        return None
+
+    # Calculate delay
+    delay = estim_min - sched_min
+    if delay <= 0:
+        return None  # No delay
+
+    # Apply delay to check-in open time
+    new_open_min = db_open_min + delay
+    new_open_min = new_open_min % (24 * 60)  # Handle day wrap
+
+    return f"{new_open_min // 60:02d}{new_open_min % 60:02d}"
 
 
 def _recalculate_close(db_open: str, db_close: str, api_open: str) -> str:
@@ -685,14 +740,14 @@ def ApiPreviewCard(cache: dict, days: int = 3) -> Div:
                 matched.append((db_by_call[call], scraped, cached))
 
         # Filter past flights (only for today)
+        # IMPORTANT: Use DEPARTURE TIME (scheduled_time), NOT check-in open time!
+        # A flight with check-in at 09:10 and departure at 12:10 should NOT be
+        # filtered out at 10:00 just because check-in time has passed.
         if i == 0:  # Today - filter past
             future_flights = []
             for db_flight, scraped, cached in matched:
-                flight_time = ""
-                if cached and cached.get("status_time"):
-                    flight_time = cached["status_time"]
-                else:
-                    flight_time = scraped.scheduled_time or ""
+                # Always use scheduled departure time for filtering
+                flight_time = scraped.scheduled_time or ""
                 if not flight_time:
                     continue
                 if flight_time >= current_time:
@@ -717,26 +772,39 @@ def ApiPreviewCard(cache: dict, days: int = 3) -> Div:
             # Get notes from scraped or cached data
             notes_en = getattr(scraped, "notes_en", "") or (cached.get("notes_en", "") if cached else "")
             notes_vn = getattr(scraped, "notes_vn", "") or (cached.get("notes_vn", "") if cached else "")
-            
-            # Extract check-in time from notes
+
+            # === ENHANCED CHECK-IN TIME EXTRACTION ===
+            # Priority 1: Extract from notesEn/notesVn (explicit time like "CHECK-IN 14:25")
+            # Priority 2: Calculate from delay if departure is delayed
+            # Priority 3: Use cached status_time
+            # Priority 4: Fallback to DB open time
+
             notes_checkin_time = _extract_checkin_time_from_notes(notes_en, notes_vn)
 
-            # Determine open time:
-            # Priority: notes check-in time > cached status_time > DB open
-            # NOTE: DO NOT use scraped.scheduled_time/estimated_time — those are
-            # departure times, NOT check-in times!
             api_open = ""
             is_from_cache = False
+            is_calculated = False
 
             if notes_checkin_time:
-                # Always use notes check-in time when available
+                # Priority 1: Explicit check-in time from notes
                 api_open = notes_checkin_time
-            elif cached and cached.get("status_time"):
-                # Fallback to cached status time
+            elif scraped.scheduled_time and scraped.estimated_time:
+                # Priority 2: Calculate from delay offset
+                calculated_open = _calculate_delayed_checkin(
+                    db_open_raw,
+                    scraped.scheduled_time,
+                    scraped.estimated_time,
+                )
+                if calculated_open:
+                    api_open = calculated_open
+                    is_calculated = True
+
+            # Priority 3: Fallback to cached status time
+            if not api_open and cached and cached.get("status_time"):
                 api_open = cached["status_time"]
                 is_from_cache = True
 
-            # If no API/cache time found, use DB open time as-is
+            # Priority 4: Use DB open time as-is
             if api_open:
                 api_open_z = api_open.zfill(4)
                 api_open_formatted = f"{api_open_z[:2]}:{api_open_z[2:]}"
