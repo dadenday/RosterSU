@@ -80,7 +80,12 @@ class FlightScraper:
         if not REQUESTS_AVAILABLE:
             logger.warning("requests library not available - cannot fetch flights")
             return []
-            
+
+        # Note: We intentionally do NOT call cleanup_stale_entries() here.
+        # Stale entries are automatically handled by get_cached_flight() which
+        # checks TTL and removes stale entries on access. Running cleanup on
+        # every fetch would unnecessarily delete valid cache entries.
+
         try:
             params = {
                 "type": "D",
@@ -99,7 +104,7 @@ class FlightScraper:
 
             flights = []
             for item in flights_data:
-                flights.append(ScrapedFlight(
+                scraped_flight = ScrapedFlight(
                     flight_no=item.get("flightNo", "").strip().upper(),
                     scheduled_time=item.get("scheduledTime", ""),
                     estimated_time=item.get("estimatedTime", ""),
@@ -110,7 +115,41 @@ class FlightScraper:
                     route=item.get("route", ""),
                     notes_en=item.get("notesEn", "") or "",
                     notes_vn=item.get("notesVn", "") or "",
-                ))
+                )
+                flights.append(scraped_flight)
+
+                # CRITICAL: Save to cache so it survives app restarts and provides
+                # fallback when API is down. This also ensures cache stays current
+                # when flight times are updated (e.g., delay announcements).
+                #
+                # IMPORTANT: Extract check-in open time from notesEn if available,
+                # NOT the scheduled/estimated departure times!
+                try:
+                    from status_cache import save_flight_from_api
+                    import re
+
+                    notes_en = item.get("notesEn", "") or ""
+                    # Extract check-in time from notesEn like "CHECK-IN 14:25"
+                    status_time_for_cache = item.get("scheduledTime", "")  # Default to departure time
+                    checkin_match = re.search(r'CHECK-IN\s+(\d{1,2})[:h](\d{2})', notes_en, re.IGNORECASE)
+                    if checkin_match:
+                        # Store check-in time as the primary status_time
+                        hours = int(checkin_match.group(1))
+                        minutes = int(checkin_match.group(2))
+                        status_time_for_cache = f"{hours:02d}{minutes:02d}"
+
+                    save_flight_from_api(date, item.get("flightNo", "").strip().upper(), {
+                        "status_time": status_time_for_cache,
+                        "status": item.get("notesEn", "") or item.get("status", ""),
+                        "gate": item.get("gate", ""),
+                        "ck_row": item.get("ckRow") or "",
+                        "route": item.get("route", ""),
+                        "notes_en": notes_en,
+                        "notes_vn": item.get("notesVn", "") or "",
+                    })
+                except Exception as e:
+                    logger.warning(f"Failed to cache flight {scraped_flight.flight_no}: {e}")
+
             logger.info(f"Fetched {len(flights)} departures for {date}")
             return flights
 
