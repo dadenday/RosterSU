@@ -2,7 +2,7 @@
 # ==========================================
 # RosterSU Auto-Update Script
 # ==========================================
-# Usage: ./update.sh
+# Usage: ./update.sh [--yes]
 #
 # Features:
 # - Check for updates
@@ -10,9 +10,20 @@
 # - Pull latest changes
 # - Install new dependencies
 # - Rollback on failure
+#
+# Options:
+#   --yes    Skip confirmation prompt (for non-interactive use)
 # ==========================================
 
 set -e
+
+# Parse arguments
+AUTO_CONFIRM=false
+for arg in "$@"; do
+    case "$arg" in
+        --yes|-y) AUTO_CONFIRM=true ;;
+    esac
+done
 
 # Colors for output
 RED='\033[0;31m'
@@ -105,13 +116,17 @@ check_updates() {
     echo ""
     
     # Ask for confirmation
-    read -p "Do you want to update? (y/N) " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        info "Update cancelled"
-        exit 0
+    if [ "$AUTO_CONFIRM" = true ]; then
+        info "Auto-confirming update (--yes flag)"
+    else
+        read -p "Do you want to update? (y/N) " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            info "Update cancelled"
+            exit 0
+        fi
     fi
-    
+
     return 0
 }
 

@@ -33,6 +33,7 @@ from config import (
     MAX_UPLOAD_MB,
     SAFE_THRESHOLD,
     PROJECT_ROOT,
+    APP_DIR,
     _load_merged_config,
 )
 from state import (
@@ -432,9 +433,9 @@ def post_scan():
 def check_version():
     """Check for available updates by comparing local and remote versions."""
     import subprocess
-    
-    version_file = os.path.join(PROJECT_ROOT, "VERSION")
-    
+
+    version_file = os.path.join(APP_DIR, "VERSION")
+
     # Get local version
     local_version = "unknown"
     if os.path.exists(version_file):
@@ -510,7 +511,7 @@ def check_version():
             style="padding:0.5rem; background:#1e293b; border-radius:5px;"
         )
     
-    # Has update - show details
+    # Has update - show details with Update Now button
     changes_html = ""
     if changes:
         changes_html = Div(
@@ -518,20 +519,126 @@ def check_version():
             *[P(f"• {change}", style="font-size:0.8rem; margin:0.2rem 0;") for change in changes],
             style="margin:0.5rem 0;",
         )
-    
+
+    update_script = os.path.join(APP_DIR, "update.sh")
+    update_button_html = ""
+    if os.path.exists(update_script):
+        update_button_html = Div(
+            Button(
+                "⬇️ Cập nhật ngay",
+                hx_post="/api/version/update",
+                hx_target="#update-progress",
+                hx_swap="innerHTML",
+                hx_confirm="Bạn có chắc chắn muốn cập nhật? Ứng dụng sẽ cần khởi động lại sau khi hoàn tất.",
+                cls="btn-act",
+                style="margin-top:0.5rem; background:#3b82f6;",
+            ),
+            Div(id="update-progress"),
+            style="margin-top:0.5rem;",
+        )
+
     return Div(
         Div(
             P("🎉 Có bản cập nhật mới!", style="color:#fbbf24; font-weight:600;"),
             P(f"Hiện tại: {local_version} → Mới nhất: {remote_version}", style="margin:0.3rem 0;"),
             changes_html,
+            update_button_html,
             P(
-                "💡 Chạy lệnh sau để cập nhật:",
-                style="margin-top:0.5rem; font-size:0.8rem;",
+                "💡 Hoặc chạy lệnh sau trong terminal: ",
+                Code("./update.sh", style="background:#0f172a; padding:0.2rem 0.4rem; border-radius:3px;"),
+                style="font-size:0.75rem; color:var(--muted); margin-top:0.5rem;",
             ),
-            Code("./update.sh", style="background:#0f172a; padding:0.3rem 0.6rem; border-radius:3px; display:block; margin:0.3rem 0;"),
             style="padding:0.5rem; background:#1e293b; border-radius:5px; border-left:3px solid #fbbf24;",
         )
     )
+
+
+@rt("/api/version/update", methods=["post"])
+def run_update():
+    """Run the update.sh script server-side and return progress/status."""
+    import subprocess
+
+    update_script = os.path.join(APP_DIR, "update.sh")
+
+    if not os.path.exists(update_script):
+        return Div(
+            P("❌ Không tìm thấy tệp update.sh", style="color:#ef4444;"),
+            style="padding:0.5rem; background:#1e293b; border-radius:5px;"
+        )
+
+    if not os.access(update_script, os.X_OK):
+        try:
+            os.chmod(update_script, 0o755)
+        except Exception:
+            return Div(
+                P("❌ Không thể cấp quyền thực thi cho update.sh", style="color:#ef4444;"),
+                style="padding:0.5rem; background:#1e293b; border-radius:5px;"
+            )
+
+    # Run update.sh non-interactively (auto-yes to prompts)
+    try:
+        result = subprocess.run(
+            ["bash", update_script, "--yes"],
+            cwd=APP_DIR,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"},
+        )
+
+        output_lines = result.stdout.strip().split("\n") if result.stdout else []
+        error_lines = result.stderr.strip().split("\n") if result.stderr else []
+
+        if result.returncode == 0:
+            # Extract version from output
+            new_version = "unknown"
+            version_file = os.path.join(APP_DIR, "VERSION")
+            if os.path.exists(version_file):
+                with open(version_file, "r") as f:
+                    new_version = f.read().strip()
+
+            return Div(
+                P("✅ Cập nhật thành công!", style="color:#22c55e; font-weight:600;"),
+                P(f"Phiên bản mới: {new_version}", style="margin:0.3rem 0;"),
+                Div(
+                    P("📋 Chi tiết:", style="font-weight:500; margin-bottom:0.3rem;"),
+                    *[P(line, style="font-size:0.75rem; margin:0.1rem 0; color:var(--muted);")
+                      for line in output_lines[-10:] if line.strip()],
+                    style="margin:0.5rem 0;",
+                ),
+                P(
+                    "⚠️ Vui lòng khởi động lại ứng dụng để áp dụng cập nhật!",
+                    style="color:#fbbf24; font-weight:500; margin-top:0.5rem;",
+                ),
+                style="padding:0.75rem; background:#1e293b; border-radius:5px; border-left:3px solid #22c55e;",
+            )
+        else:
+            return Div(
+                P("❌ Cập nhật thất bại!", style="color:#ef4444; font-weight:600;"),
+                Div(
+                    P("📋 Lỗi:", style="font-weight:500; margin-bottom:0.3rem;"),
+                    *[P(line, style="font-size:0.75rem; margin:0.1rem 0; color:#ef4444;")
+                      for line in error_lines[-5:] if line.strip()],
+                    style="margin:0.5rem 0;",
+                ),
+                P(
+                    "💡 Thử cập nhật thủ công: ",
+                    Code("./update.sh", style="background:#0f172a; padding:0.2rem 0.4rem; border-radius:3px;"),
+                    style="font-size:0.75rem; color:var(--muted); margin-top:0.5rem;",
+                ),
+                style="padding:0.75rem; background:#1e293b; border-radius:5px; border-left:3px solid #ef4444;",
+            )
+
+    except subprocess.TimeoutExpired:
+        return Div(
+            P("⏰ Cập nhật hết thời gian (120s). Vui lòng chạy thủ công.", style="color:#fbbf24;"),
+            style="padding:0.5rem; background:#1e293b; border-radius:5px;"
+        )
+    except Exception as e:
+        return Div(
+            P(f"❌ Lỗi: {html.escape(str(e))}", style="color:#ef4444;"),
+            style="padding:0.5rem; background:#1e293b; border-radius:5px;"
+        )
 
 
 @rt("/settings", methods=["get", "post"])
