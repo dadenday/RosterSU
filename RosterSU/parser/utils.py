@@ -44,14 +44,29 @@ def get_cell_flags(cell):
 
 
 def clean_val(val):
-    """Clean a cell value, removing trailing .0 and 'nan' strings."""
+    """Clean a cell value, removing trailing .0 and 'nan' strings.
+
+    Also normalizes abbreviated middle name typos:
+    - "T, KIỆT" → "T. KIỆT" (single char comma → single char dot)
+    This corrects human typos where comma is used instead of period
+    for abbreviated middle names in Vietnamese name format.
+    """
     if val is None:
         return ""
     s = str(val).strip()
     if s.endswith(".0"):
-        return s[:-2]
+        s = s[:-2]
     if s.lower() == "nan":
         return ""
+    # Fix typo: "T, KIỆT" → "T. KIỆT" (abbreviated middle name pattern)
+    # Vietnamese name parts have 2+ letters; 1 letter = always abbreviation
+    # When 1 letter is followed by comma = typo = should be period
+    # Pattern: single letter at start OR after space, followed by comma
+    # Examples:
+    #   "T, KIỆT" → "T. KIỆT" ✓
+    #   "THẮNG, T, KIỆT" → "THẮNG, T. KIỆT" ✓
+    #   "NGUYỄN VĂN AN, TRẦN VĂN BA" → unchanged (both full names)
+    s = re.sub(r"(?:(^)|(?<=\s))([A-ZÀ-Ỹ]),\s*", r"\2. ", s)
     return s
 
 
