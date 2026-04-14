@@ -594,11 +594,13 @@ def _load_db_flights_for_date(date_db: str) -> list:
 def _compact_status_lines(status_text: str) -> Div:
     """Break status text into compact lines for the rowspan=2 cell.
 
-    Splits text to fit within 2 table rows while keeping it readable.
+    Intelligently splits status text based on string length, word boundaries,
+    and semantic patterns to fit within the cell width.
+
     Examples:
-        "LÀM THỦ TỤC LÚC 14:25" → "LÀM THỦ<br>TỤC LÚC<br>14:25"
         "ĐANG LÀM THỦ TỤC" → "ĐANG LÀM<br>THỦ TỤC"
-        "CHECK-IN 14:25" → "CHECK-IN<br>14:25"
+        "LÀM THỦ TỤC LÚC 14:25" → "LÀM THỦ TỤC<br>LÚC 14:25"
+        "HÀNH KHÁCH ĐANG LÊN TÀU BAY" → "HÀNH KHÁCH<br>ĐANG LÊN<br>TÀU BAY"
 
     Args:
         status_text: Raw status string
@@ -609,61 +611,122 @@ def _compact_status_lines(status_text: str) -> Div:
     if not status_text:
         return Div("--", style="opacity:0.4;")
 
-    # Normalize whitespace
     text = status_text.strip()
+    if not text:
+        return Div("--", style="opacity:0.4;")
 
-    # If already short (fits in 2 rows), keep as-is
-    if len(text) <= 15:
-        return Div(text)
+    # Max characters per line — status cell is ~80-100px wide,
+    # at 0.85rem font that's roughly 12-14 Vietnamese chars comfortably
+    MAX_LINE = 14
 
-    # Split "LÀM THỦ TỤC LÚC HH:MM" pattern
-    import re
-    match = re.match(r'(LÀM THỦ TỤC)\s+LÚC\s+(\d{1,2}[:h]\d{2})', text, re.IGNORECASE)
-    if match:
-        action = match.group(1)  # "LÀM THỦ TỤC"
-        time_val = match.group(2)
-        # Split into 3 compact lines
-        words = action.split()
-        if len(words) >= 2:
-            line1 = words[0]  # "LÀM"
-            line2 = " ".join(words[1:]) + " LÚC"  # "THỦ TỤC LÚC"
-            line3 = time_val  # "14:25"
-            return Div(
-                Span(line1),
-                Br(),
-                Span(line2),
-                Br(),
-                Span(line3, style="font-weight:800;"),
-            )
+    def _split_into_lines(s: str) -> list[str]:
+        """Split a string into lines that fit within MAX_LINE chars.
 
-    # Split "CHECK-IN HH:MM" pattern
-    match = re.match(r'CHECK-IN\s+(\d{1,2}[:h]\d{2})', text, re.IGNORECASE)
-    if match:
-        return Div(
-            Span("CHECK-IN"),
-            Br(),
-            Span(match.group(1), style="font-weight:800;"),
-        )
+        Uses greedy word-packing with a MIN_LINE threshold to avoid
+        orphan words on the last line. E.g.:
+            "ĐANG LÀM THỦ TỤC" → "ĐANG LÀM" | "THỦ TỤC"  (not "ĐANG LÀM THỦ" | "TỤC")
+        """
+        if len(s) <= MAX_LINE:
+            return [s]
 
-    # Generic fallback: split into chunks of ~12 chars
-    if len(text) > 15:
-        chunks = []
-        for i in range(0, len(text), 12):
-            chunk = text[i:i+12]
-            # Try to break at word boundary
-            if i + 12 < len(text):
-                space_pos = chunk.rfind(' ')
-                if space_pos > 4:
-                    chunk = chunk[:space_pos]
-            chunks.append(chunk)
+        words = s.split()
+        if not words:
+            return [s]
+
+        # Single long word — break it evenly
+        if len(words) == 1:
+            lines = []
+            for i in range(0, len(s), MAX_LINE):
+                lines.append(s[i:i + MAX_LINE])
+            return lines
+
+        # Minimum chars for last line to avoid orphans
+        MIN_LINE = 5
+
+        lines = []
+        current_words = []
+
+        for word in words:
+            test_line = " ".join(current_words + [word]) if current_words else word
+            if len(test_line) <= MAX_LINE:
+                current_words.append(word)
+            else:
+                lines.append(" ".join(current_words))
+                current_words = [word]
+
+        # Orphan check: if last line is tiny, merge with previous and re-split
+        if current_words:
+            last = " ".join(current_words)
+            if len(last) < MIN_LINE and lines:
+                combined = lines[-1] + " " + last
+                if len(combined) <= MAX_LINE:
+                    lines[-1] = combined
+                else:
+                    # Split combined roughly in half at word boundary
+                    words_all = combined.split()
+                    mid = len(words_all) // 2
+                    lines[-1] = " ".join(words_all[:mid])
+                    lines.append(" ".join(words_all[mid:]))
+            else:
+                lines.append(last)
+
+        return lines
+
+    def _make_div(lines: list[str], highlight_last_time: bool = False) -> Div:
+        """Build a Div from lines, optionally bolding the last line if it looks like a time."""
+        if len(lines) <= 1:
+            return Div(lines[0] if lines else "--")
+
         elements = []
-        for i, chunk in enumerate(chunks):
+        for i, line in enumerate(lines):
             if i > 0:
                 elements.append(Br())
-            elements.append(Span(chunk))
+            # If last line is just a time (e.g. "14:25"), emphasize it
+            if highlight_last_time and i == len(lines) - 1:
+                import re
+                if re.match(r'\d{1,2}[:hH]\d{2}', line):
+                    elements.append(Span(line, style="font-weight:800;"))
+                else:
+                    elements.append(Span(line))
+            else:
+                elements.append(Span(line))
         return Div(*elements)
 
-    return Div(text)
+    # --- Pattern-aware splitting ---
+    import re
+
+    # Pattern 1: "LÀM THỦ TỤC LÚC HH:MM"
+    match = re.match(r'(LÀM THỦ TỤC)\s+LÚC\s+(\d{1,2}[:hH]\d{2})', text, re.IGNORECASE)
+    if match:
+        action = match.group(1)
+        time_val = match.group(2)
+        action_lines = _split_into_lines(action)
+        return _make_div(action_lines + [f"LÚC {time_val}"], highlight_last_time=True)
+
+    # Pattern 2: "CHECK-IN HH:MM" or "CHECK-IN"
+    match = re.match(r'(CHECK-IN)\s*(\d{1,2}[:hH]\d{2})?', text, re.IGNORECASE)
+    if match:
+        label = match.group(1)
+        time_val = match.group(2)
+        if time_val:
+            return _make_div([label, time_val], highlight_last_time=True)
+        return _make_div([label])
+
+    # Pattern 3: "FLIGHT DD/MM ARRIVED" (multi-day edge case)
+    match = re.match(r'(FLIGHT\s+\d+/\d+)\s+(.*)', text, re.IGNORECASE)
+    if match:
+        flight_ref = match.group(1)
+        rest = match.group(2)
+        rest_lines = _split_into_lines(rest)
+        return _make_div([flight_ref] + rest_lines)
+
+    # Pattern 4: "ĐỔI GIỜ" (CHANGED TIME) — short, keep as-is
+    if len(text) <= MAX_LINE:
+        return Div(text)
+
+    # Pattern 5: Generic — split at word boundaries
+    lines = _split_into_lines(text)
+    return _make_div(lines)
 
 
 def ApiPreviewCard(cache: dict, days: int = 3) -> Div:
@@ -846,8 +909,8 @@ def ApiPreviewCard(cache: dict, days: int = 3) -> Div:
             row2 = Tr(
                 Td(route),
                 Td(close if close else "--"),
-                Td(ckrow),
-                Td(bay),
+                Td(ckrow if ckrow else "--"),
+                Td(bay if bay else "--"),
             )
             table_rows.append(row1)
             table_rows.append(row2)
