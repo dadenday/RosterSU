@@ -167,11 +167,15 @@ from parser import (
 from config import (
     # App config
     PROJECT_ROOT,
+    APP_DIR,
+    CONFIG_DIR,
+    CONFIG_FILE,
+    OLD_CONFIG_FILE,
     DB_FILE,
     DEBUG_FILE,
-    CONFIG_FILE,
     DEFAULT_CONFIG,
     _load_merged_config,
+    _migrate_config_from_legacy_location,
     AUTO_INGEST_DIR,
     EXPORT_DIR,
     PROCESSED_ARCHIVE_DIR,

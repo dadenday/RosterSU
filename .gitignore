@@ -24,6 +24,7 @@ output.txt
 
 # User config (contains personal data)
 rosterSU_config.json
+RosterSU/config/rosterSU_config.json
 
 # Generated output
 schedule.html
@@ -40,9 +41,9 @@ current_*.txt
 # Old version copies
 RosterSU_*/
 
-# Test files
-test_*.py
-test_*.json
+# Dev test files outside tests/ directory (scratch tests)
+/test_*.py
+/RosterSU/test_*.py
 
 # Audit/reports/docs (not source code)
 RosterSU/audit_*
@@ -50,7 +51,15 @@ RosterSU/Gpt_*
 RosterSU/Grok_*
 RosterSU/MAP.md
 RosterSU/tech_debt.md
-RosterSU/test_*
+RosterSU/test_report_*
 
-# Termux test screenshots
-tests/
+# Test artifacts (keep test source code, ignore artifacts only)
+tests/*.jpg
+tests/*.png
+tests/*.db
+tests/screen*.jpg
+tests/screen*.png
+
+# Termux screenshots (outside tests/)
+*.jpg
+*.png

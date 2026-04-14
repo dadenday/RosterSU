@@ -21,11 +21,22 @@ import json
 # Application Configuration
 # ============================================================================
 
-# Calculate project root (one level up from RosterSU/ directory)
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# App directory: the directory this module lives in (RosterSU/)
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Project root: one level above RosterSU/ (legacy location for old config)
+PROJECT_ROOT = os.path.dirname(APP_DIR)
+
+# Config directory: inside RosterSU/ so config travels with the app
+CONFIG_DIR = os.path.join(APP_DIR, "config")
+os.makedirs(CONFIG_DIR, exist_ok=True)
+
+CONFIG_FILE = os.path.join(CONFIG_DIR, "rosterSU_config.json")
+
+# Legacy config location (one level above RosterSU/) — used for migration
+OLD_CONFIG_FILE = os.path.join(PROJECT_ROOT, "rosterSU_config.json")
 
 DEBUG_FILE = os.path.join(PROJECT_ROOT, "roster_debug.json")
-CONFIG_FILE = os.path.join(PROJECT_ROOT, "rosterSU_config.json")
 
 # Default configuration — source of truth for all JSON-mergeable settings
 DEFAULT_CONFIG = {
@@ -59,8 +70,28 @@ DEFAULT_CONFIG = {
 # JSON Merge — operational settings derive from config file + defaults
 # ============================================================================
 
+def _migrate_config_from_legacy_location() -> bool:
+    """
+    Migrate config from legacy location (PROJECT_ROOT/) to new location (CONFIG_DIR/).
+    Returns True if migration occurred.
+    """
+    if os.path.exists(OLD_CONFIG_FILE) and not os.path.exists(CONFIG_FILE):
+        try:
+            with open(OLD_CONFIG_FILE, "r", encoding="utf-8") as src:
+                content = src.read()
+            with open(CONFIG_FILE, "w", encoding="utf-8") as dst:
+                dst.write(content)
+            return True
+        except (IOError, OSError, json.JSONDecodeError):
+            pass
+    return False
+
+
 def _load_merged_config() -> dict:
     """Load JSON config and merge with DEFAULT_CONFIG."""
+    # Attempt migration from old location before loading
+    _migrate_config_from_legacy_location()
+
     merged = DEFAULT_CONFIG.copy()
     merged["aircraft"] = DEFAULT_CONFIG["aircraft"].copy()
     if os.path.exists(CONFIG_FILE):
