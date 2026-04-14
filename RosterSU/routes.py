@@ -33,6 +33,7 @@ from config import (
     MAX_UPLOAD_MB,
     SAFE_THRESHOLD,
     PROJECT_ROOT,
+    _load_merged_config,
 )
 from state import (
     try_get_app_status,
@@ -210,6 +211,10 @@ def get():
     # Initial RosterList with default month filter
     initial_list = RosterList(filter_month=default_month)
 
+    # Check if flight sync (API auto-refresh) is enabled
+    merged = _load_merged_config()
+    flight_sync_enabled = merged.get("enable_flight_sync", False)
+
     content = Div(
         Div(
             Select(
@@ -264,6 +269,21 @@ def get():
         Div(ApiPreviewCard(cache=_flight_api_cache), id="api-preview-wrapper"),
         Div(H4("📋 Lịch làm việc"), style="margin-top:0.5rem;"),
         Div(initial_list, id="roster-list"),
+        # Auto-refresh API preview card once after page load (gated by flight sync config)
+        Script(f"""
+        document.addEventListener('DOMContentLoaded', function() {{
+            const FLIGHT_SYNC_ENABLED = {'true' if flight_sync_enabled else 'false'};
+            if (!FLIGHT_SYNC_ENABLED) return;
+            // Wait a short delay to let the initial render complete,
+            // then trigger the API preview refresh
+            setTimeout(function() {{
+                htmx.ajax('POST', '/flight/preview/fetch', {{
+                    target: '#api-preview-card',
+                    swap: 'outerHTML'
+                }});
+            }}, 500);
+        }});
+        """),
         Script("""
         function toggleDeleteMode() {
             const list = document.getElementById('roster-list');
@@ -931,11 +951,12 @@ def settings_page(
                 ),
                 cls="card mb-3",
             ),
-            # Flight Delay Auto-Sync toggle (radio button pattern like static HTML)
+            # Flight Sync toggle (API Preview Card auto-refresh)
             Div(
-                H5("Quét web sân bay"),
+                H5("🛬 Quét web sân bay"),
                 P(
-                    "Tự động cập nhật giờ bay và quầy check-in từ web sân bay.",
+                    "Tự động tải và hiển thị thông tin chuyến bay từ web sân bay vào API Roster Card. "
+                    "Khi bật, API Card sẽ tự động load dữ liệu khi mở app. Khi tắt, chỉ hiển thị nút thủ công.",
                     style="font-size:0.8rem; color:var(--muted); margin-bottom:0.5rem;",
                 ),
                 # Radio buttons for On/Off

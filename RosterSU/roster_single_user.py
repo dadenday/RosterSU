@@ -3465,41 +3465,19 @@ if __name__ in {"__main__", "builtins"}:
     debug_log(f"Debug mode is {'enabled' if DEBUG_ENABLED else 'disabled'}", "MAIN")
     init_db()
 
-    # --- Flight Delay Auto-Sync + API Preview Card ---
+    # --- Flight Sync (API Preview Card Auto-Refresh) ---
     def _run_flight_startup_sync():
-        """Run flight sync + API preview cache refresh at startup if enabled.
-        
-        AutoSyncService: matches API data with DB flights, recalculates times (display-only).
-        API preview cache: fetched in background thread so timeout doesn't block startup.
-        Both are gated by enable_flight_sync config.
+        """Refresh API preview cache at startup if flight sync is enabled.
+
+        Runs in a background thread so the API timeout doesn't block app startup.
+        Gated by enable_flight_sync config.
         """
         try:
             merged = _load_merged_config()
             if not merged.get("enable_flight_sync", False):
-                debug_log("Flight sync: disabled in config, skipping")
+                debug_log("Flight sync: disabled in config, skipping API cache refresh")
                 return
 
-            # Part 1: AutoSync — match API with DB, recalculate times (display-only)
-            from scraper import AutoSyncService
-            from database import get_db
-
-            today_iso = datetime.now().strftime("%Y-%m-%d")
-            today_db = datetime.now().strftime("%d.%m.%Y")
-
-            conn = get_db()
-            try:
-                service = AutoSyncService()
-                sync_result = service.run_sync(conn, today_iso, today_db)
-                for detail in sync_result.details:
-                    debug_log(f"Flight sync: {detail}")
-            finally:
-                conn.close()
-
-            # Bump revision to trigger UI refresh
-            from state import bump_db_rev
-            bump_db_rev()
-
-            # Part 2: API preview cache — run in background to avoid blocking
             def _refresh_api_preview_cache():
                 try:
                     import routes
