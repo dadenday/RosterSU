@@ -15,6 +15,7 @@ from datetime import datetime
 # Gracefully handle missing requests library
 try:
     import requests
+
     REQUESTS_AVAILABLE = True
 except ImportError:
     requests = None
@@ -31,37 +32,40 @@ REQUEST_TIMEOUT = 15  # seconds
 @dataclass
 class ScrapedFlight:
     """A single flight record from the airport API."""
-    flight_no: str           # e.g., "ZE582"
-    scheduled_time: str      # "HHMM" format, e.g., "0830"
-    estimated_time: str      # "HHMM" format, e.g., "1000"
+
+    flight_no: str  # e.g., "ZE582"
+    scheduled_time: str  # "HHMM" format, e.g., "0830"
+    estimated_time: str  # "HHMM" format, e.g., "1000"
     actual_time: Optional[str]  # "HHMM" or None
-    ck_row: str              # e.g., "28-29"
-    gate: str                # e.g., "9"
-    status: str              # e.g., "DEPARTED"
-    route: str               # e.g., "PQC-ICN"
-    notes_en: str = ""       # e.g., "CHECK-IN 14:25"
-    notes_vn: str = ""       # e.g., "LÀM THỦ TỤC LÚC 14:25"
+    ck_row: str  # e.g., "28-29"
+    gate: str  # e.g., "9"
+    status: str  # e.g., "DEPARTED"
+    route: str  # e.g., "PQC-ICN"
+    notes_en: str = ""  # e.g., "CHECK-IN 14:25"
+    notes_vn: str = ""  # e.g., "LÀM THỦ TỤC LÚC 14:25"
 
 
 @dataclass
 class MatchResult:
     """A matched pair of scraped flight + DB flight."""
+
     scraped: ScrapedFlight
-    db_flight: dict          # The flight dict from DB's full_data JSON
-    db_date: str             # The work_date (DD.MM.YYYY)
-    db_open: str             # Original open time, e.g., "08h00"
-    db_close: str            # Original close time, e.g., "12h30"
+    db_flight: dict  # The flight dict from DB's full_data JSON
+    db_date: str  # The work_date (DD.MM.YYYY)
+    db_open: str  # Original open time, e.g., "08h00"
+    db_close: str  # Original close time, e.g., "12h30"
     db_ckrow: Optional[str]  # Original ckrow (may be None)
 
 
 @dataclass
 class UpdatedFlight:
     """Result of delay recalculation."""
+
     flight_no: str
-    new_open: str            # e.g., "10h00"
-    new_close: str           # e.g., "14h30"
-    new_ckrow: str           # e.g., "28-29"
-    was_delayed: bool        # True if scheduled != estimated
+    new_open: str  # e.g., "10h00"
+    new_close: str  # e.g., "14h30"
+    new_ckrow: str  # e.g., "28-29"
+    was_delayed: bool  # True if scheduled != estimated
 
 
 class FlightScraper:
@@ -88,16 +92,16 @@ class FlightScraper:
 
         try:
             params = {
-                "type": "D",
+                "type": "departures",
                 "date": date,
-                # NOTE: limit=100 causes API to exclude some flights (e.g., ZF2602).
-                # Omitting limit returns the correct dataset (61 flights for 2026-04-13).
             }
             resp = requests.get(API_BASE_URL, params=params, timeout=REQUEST_TIMEOUT)
             resp.raise_for_status()
             payload = resp.json()
             # API returns {"success": true, "data": [...]} — extract the array
-            flights_data = payload.get("data", []) if isinstance(payload, dict) else payload
+            flights_data = (
+                payload.get("data", []) if isinstance(payload, dict) else payload
+            )
             if not isinstance(flights_data, list):
                 logger.warning(f"Unexpected API response type: {type(flights_data)}")
                 return []
@@ -130,25 +134,35 @@ class FlightScraper:
 
                     notes_en = item.get("notesEn", "") or ""
                     # Extract check-in time from notesEn like "CHECK-IN 14:25"
-                    status_time_for_cache = item.get("scheduledTime", "")  # Default to departure time
-                    checkin_match = re.search(r'CHECK-IN\s+(\d{1,2})[:h](\d{2})', notes_en, re.IGNORECASE)
+                    status_time_for_cache = item.get(
+                        "scheduledTime", ""
+                    )  # Default to departure time
+                    checkin_match = re.search(
+                        r"CHECK-IN\s+(\d{1,2})[:h](\d{2})", notes_en, re.IGNORECASE
+                    )
                     if checkin_match:
                         # Store check-in time as the primary status_time
                         hours = int(checkin_match.group(1))
                         minutes = int(checkin_match.group(2))
                         status_time_for_cache = f"{hours:02d}{minutes:02d}"
 
-                    save_flight_from_api(date, item.get("flightNo", "").strip().upper(), {
-                        "status_time": status_time_for_cache,
-                        "status": item.get("notesEn", "") or item.get("status", ""),
-                        "gate": item.get("gate", ""),
-                        "ck_row": item.get("ckRow") or "",
-                        "route": item.get("route", ""),
-                        "notes_en": notes_en,
-                        "notes_vn": item.get("notesVn", "") or "",
-                    })
+                    save_flight_from_api(
+                        date,
+                        item.get("flightNo", "").strip().upper(),
+                        {
+                            "status_time": status_time_for_cache,
+                            "status": item.get("notesEn", "") or item.get("status", ""),
+                            "gate": item.get("gate", ""),
+                            "ck_row": item.get("ckRow") or "",
+                            "route": item.get("route", ""),
+                            "notes_en": notes_en,
+                            "notes_vn": item.get("notesVn", "") or "",
+                        },
+                    )
                 except Exception as e:
-                    logger.warning(f"Failed to cache flight {scraped_flight.flight_no}: {e}")
+                    logger.warning(
+                        f"Failed to cache flight {scraped_flight.flight_no}: {e}"
+                    )
 
             logger.info(f"Fetched {len(flights)} departures for {date}")
             return flights
@@ -163,7 +177,9 @@ class FlightScraper:
             logger.warning(f"Flight API parse error: {e}")
             return []
 
-    def get_flights_with_cache(self, date_iso: str) -> list[tuple[ScrapedFlight, Optional[dict]]]:
+    def get_flights_with_cache(
+        self, date_iso: str
+    ) -> list[tuple[ScrapedFlight, Optional[dict]]]:
         """Fetch API departures and merge with cached status data.
 
         Used ONLY by the API preview card. Falls back to disk cache
@@ -193,7 +209,9 @@ class FlightScraper:
             for api_flight in api_flights:
                 cached = get_cached_flight(date_iso, api_flight.flight_no)
                 results.append((api_flight, cached))
-            logger.info(f"API fetch: {len(results)} flights for {date_iso} ({sum(1 for _, c in results if c)} have cache)")
+            logger.info(
+                f"API fetch: {len(results)} flights for {date_iso} ({sum(1 for _, c in results if c)} have cache)"
+            )
             return results
         else:
             # API empty/timeout — fall back to disk cache for display
@@ -214,7 +232,9 @@ class FlightScraper:
                         notes_vn=cf.get("notes_vn", ""),
                     )
                     results.append((sf, cf))
-                logger.info(f"API empty, using {len(results)} cached flights for {date_iso}")
+                logger.info(
+                    f"API empty, using {len(results)} cached flights for {date_iso}"
+                )
                 return results
             else:
                 logger.info(f"No API or cached data for {date_iso}")
@@ -320,14 +340,16 @@ class DelayCalculator:
                 db_open = db_f.get("Open", "")
                 db_close = db_f.get("Close", "")
                 if db_open and db_close:  # Skip if missing times
-                    results.append(MatchResult(
-                        scraped=s,
-                        db_flight=db_f,
-                        db_date=db_date,
-                        db_open=db_open,
-                        db_close=db_close,
-                        db_ckrow=db_f.get("ckRow"),
-                    ))
+                    results.append(
+                        MatchResult(
+                            scraped=s,
+                            db_flight=db_f,
+                            db_date=db_date,
+                            db_open=db_open,
+                            db_close=db_close,
+                            db_ckrow=db_f.get("ckRow"),
+                        )
+                    )
                 else:
                     logger.info(f"Skipping {key}: missing Open/Close times")
 
@@ -409,6 +431,7 @@ class DelayCalculator:
 @dataclass
 class SyncResult:
     """Summary of a sync run."""
+
     matched: int = 0
     updated: int = 0
     skipped: int = 0
@@ -447,7 +470,7 @@ class AutoSyncService:
         # Step 2: Get today's schedule from DB
         cursor = db_conn.execute(
             "SELECT work_date, full_data FROM work_schedule WHERE work_date = ?",
-            (today_ddmmyyyy,)
+            (today_ddmmyyyy,),
         )
         row = cursor.fetchone()
 
@@ -491,9 +514,15 @@ class AutoSyncService:
         # Step 5: DO NOT write back to DB — API data is display-only
         # DB is populated exclusively by Excel roster file parsers
         if recalculated:
-            result.details.append(f"{len(recalculated)} flights recalculated (display-only, DB untouched)")
+            result.details.append(
+                f"{len(recalculated)} flights recalculated (display-only, DB untouched)"
+            )
         else:
-            result.details.append(f"No changes needed ({result.skipped} flights checked)")
+            result.details.append(
+                f"No changes needed ({result.skipped} flights checked)"
+            )
 
-        logger.info(f"Flight sync complete: matched={result.matched}, updated={result.updated}, skipped={result.skipped}, errors={result.errors}")
+        logger.info(
+            f"Flight sync complete: matched={result.matched}, updated={result.updated}, skipped={result.skipped}, errors={result.errors}"
+        )
         return result

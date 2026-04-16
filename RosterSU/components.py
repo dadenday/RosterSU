@@ -27,7 +27,12 @@ def _init_components(
     get_aircraft_config_fn, count_history_fn, load_history_fn, page_size=50
 ):
     """Initialize components module with dependencies from main module."""
-    global _get_aircraft_config, _count_history, _load_history, _PAGE_SIZE, _aircraft_config_cache
+    global \
+        _get_aircraft_config, \
+        _count_history, \
+        _load_history, \
+        _PAGE_SIZE, \
+        _aircraft_config_cache
     _get_aircraft_config = get_aircraft_config_fn
     _count_history = count_history_fn
     _load_history = load_history_fn
@@ -379,11 +384,7 @@ def RosterList(filter_month=None, page=1, count_history_fn=None, load_history_fn
         shift_info = data.get("shift")
         sorted_flights = sort_flights_by_open_time(flights, shift_info=shift_info)
         should_expand = is_flight_card_active(r["work_date"], sorted_flights)
-        cards.append(
-            RosterCard(
-                r, is_first=should_expand, parsed_data=data
-            )
-        )
+        cards.append(RosterCard(r, is_first=should_expand, parsed_data=data))
 
     if is_paginated and total_pages > 1:
         prev_disabled = page <= 1
@@ -419,6 +420,7 @@ def RosterList(filter_month=None, page=1, count_history_fn=None, load_history_fn
 # ============================================================================
 # API Preview Card Helpers
 # ============================================================================
+
 
 def _crosscheck_route(db_route: Optional[str], api_route: Optional[str]) -> str:
     """Extract destination from route, prefer API if available.
@@ -459,14 +461,14 @@ def _extract_checkin_time_from_notes(notes_en: str, notes_vn: str) -> Optional[s
     # This filters out live status like "ĐANG LÀM THỦ TỤC", "ĐÃ CẤT CÁNH", etc.
     if "LÚC" in notes.upper():
         # Vietnamese: "LÀM THỦ TỤC LÚC 14:25"
-        match = re.search(r'LÚC\s+(\d{1,2})[:h](\d{2})', notes, re.IGNORECASE)
+        match = re.search(r"LÚC\s+(\d{1,2})[:h](\d{2})", notes, re.IGNORECASE)
         if match:
             hours = int(match.group(1))
             minutes = int(match.group(2))
             return f"{hours:02d}{minutes:02d}"
-    elif re.match(r'CHECK-IN\s+\d{1,2}[:h]\d{2}', notes, re.IGNORECASE):
+    elif re.match(r"CHECK-IN\s+\d{1,2}[:h]\d{2}", notes, re.IGNORECASE):
         # English: "CHECK-IN 14:25"
-        match = re.search(r'(\d{1,2})[:h](\d{2})', notes)
+        match = re.search(r"(\d{1,2})[:h](\d{2})", notes)
         if match:
             hours = int(match.group(1))
             minutes = int(match.group(2))
@@ -637,7 +639,7 @@ def _compact_status_lines(status_text: str) -> Div:
         if len(words) == 1:
             lines = []
             for i in range(0, len(s), MAX_LINE):
-                lines.append(s[i:i + MAX_LINE])
+                lines.append(s[i : i + MAX_LINE])
             return lines
 
         # Minimum chars for last line to avoid orphans
@@ -684,7 +686,8 @@ def _compact_status_lines(status_text: str) -> Div:
             # If last line is just a time (e.g. "14:25"), emphasize it
             if highlight_last_time and i == len(lines) - 1:
                 import re
-                if re.match(r'\d{1,2}[:hH]\d{2}', line):
+
+                if re.match(r"\d{1,2}[:hH]\d{2}", line):
                     elements.append(Span(line, style="font-weight:800;"))
                 else:
                     elements.append(Span(line))
@@ -696,7 +699,7 @@ def _compact_status_lines(status_text: str) -> Div:
     import re
 
     # Pattern 1: "LÀM THỦ TỤC LÚC HH:MM"
-    match = re.match(r'(LÀM THỦ TỤC)\s+LÚC\s+(\d{1,2}[:hH]\d{2})', text, re.IGNORECASE)
+    match = re.match(r"(LÀM THỦ TỤC)\s+LÚC\s+(\d{1,2}[:hH]\d{2})", text, re.IGNORECASE)
     if match:
         action = match.group(1)
         time_val = match.group(2)
@@ -704,7 +707,7 @@ def _compact_status_lines(status_text: str) -> Div:
         return _make_div(action_lines + [f"LÚC {time_val}"], highlight_last_time=True)
 
     # Pattern 2: "CHECK-IN HH:MM" or "CHECK-IN"
-    match = re.match(r'(CHECK-IN)\s*(\d{1,2}[:hH]\d{2})?', text, re.IGNORECASE)
+    match = re.match(r"(CHECK-IN)\s*(\d{1,2}[:hH]\d{2})?", text, re.IGNORECASE)
     if match:
         label = match.group(1)
         time_val = match.group(2)
@@ -713,7 +716,7 @@ def _compact_status_lines(status_text: str) -> Div:
         return _make_div([label])
 
     # Pattern 3: "FLIGHT DD/MM ARRIVED" (multi-day edge case)
-    match = re.match(r'(FLIGHT\s+\d+/\d+)\s+(.*)', text, re.IGNORECASE)
+    match = re.match(r"(FLIGHT\s+\d+/\d+)\s+(.*)", text, re.IGNORECASE)
     if match:
         flight_ref = match.group(1)
         rest = match.group(2)
@@ -802,27 +805,24 @@ def ApiPreviewCard(cache: dict, days: int = 3) -> Div:
             if call in db_by_call:
                 matched.append((db_by_call[call], scraped, cached))
 
-        # Filter past flights (only for today)
-        # IMPORTANT: Use DEPARTURE TIME (scheduled_time), NOT check-in open time!
-        # A flight with check-in at 09:10 and departure at 12:10 should NOT be
-        # filtered out at 10:00 just because check-in time has passed.
         if i == 0:  # Today - filter past
             future_flights = []
             for db_flight, scraped, cached in matched:
-                # Always use scheduled departure time for filtering
                 flight_time = scraped.scheduled_time or ""
                 if not flight_time:
                     continue
-                if flight_time >= current_time:
-                    future_flights.append((db_flight, scraped, cached))
+                is_early_morning = flight_time.isdigit() and int(flight_time) <= 600
+                if not is_early_morning and flight_time < current_time:
+                    continue
+                future_flights.append((db_flight, scraped, cached))
             matched = future_flights
         # Future days - show all flights
 
-        # Skip if no matched flights
         if not matched:
             continue
 
-        # Build table rows
+        matched.sort(key=lambda x: parse_time_to_minutes(x[0].get("Open", "")))
+
         table_rows = []
         for db_flight, scraped, cached in matched:
             call = db_flight.get("Call", "")
@@ -833,8 +833,12 @@ def ApiPreviewCard(cache: dict, days: int = 3) -> Div:
             db_close_raw = db_flight.get("Close", "")
 
             # Get notes from scraped or cached data
-            notes_en = getattr(scraped, "notes_en", "") or (cached.get("notes_en", "") if cached else "")
-            notes_vn = getattr(scraped, "notes_vn", "") or (cached.get("notes_vn", "") if cached else "")
+            notes_en = getattr(scraped, "notes_en", "") or (
+                cached.get("notes_en", "") if cached else ""
+            )
+            notes_vn = getattr(scraped, "notes_vn", "") or (
+                cached.get("notes_vn", "") if cached else ""
+            )
 
             # === ENHANCED CHECK-IN TIME EXTRACTION ===
             # Priority 1: Extract from notesEn/notesVn (explicit time like "CHECK-IN 14:25")
@@ -881,14 +885,26 @@ def ApiPreviewCard(cache: dict, days: int = 3) -> Div:
                 close = db_close_raw
 
             # Status: show notesVn value, fallback to regular status
-            status = notes_vn or (cached.get("status", "") if cached else (scraped.status or db_flight.get("Status", "")))
+            status = notes_vn or (
+                cached.get("status", "")
+                if cached
+                else (scraped.status or db_flight.get("Status", ""))
+            )
             # Break status text into compact lines for the rowspan=2 cell
             status_lines = _compact_status_lines(status)
             names = db_flight.get("Names", "")
-            ckrow = cached.get("ck_row", "") if cached else (scraped.ck_row or db_flight.get("ckRow", ""))
+            ckrow = (
+                cached.get("ck_row", "")
+                if cached
+                else (scraped.ck_row or db_flight.get("ckRow", ""))
+            )
             flight_type = db_flight.get("Type", "")
-            bay = _crosscheck_bay(db_flight.get("Bay"), cached.get("gate", "") if cached else scraped.gate)
-            route = _crosscheck_route(db_route, cached.get("route", "") if cached else api_route)
+            bay = _crosscheck_bay(
+                db_flight.get("Bay"), cached.get("gate", "") if cached else scraped.gate
+            )
+            route = _crosscheck_route(
+                db_route, cached.get("route", "") if cached else api_route
+            )
 
             # Cache indicator badge
             cache_badge = ""
@@ -932,8 +948,10 @@ def ApiPreviewCard(cache: dict, days: int = 3) -> Div:
     # If no dates have flights, show empty state
     if not date_sections:
         return Div(
-            P("Không có chuyến bay nào trong 3 ngày tới",
-              style="font-size:0.8rem; color:#94a3b8;"),
+            P(
+                "Không có chuyến bay nào trong 3 ngày tới",
+                style="font-size:0.8rem; color:#94a3b8;",
+            ),
             _api_preview_refresh_button(),
             id="api-preview-card",
             cls="api-preview-card",
