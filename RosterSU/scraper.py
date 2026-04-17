@@ -134,9 +134,10 @@ class FlightScraper:
 
                     notes_en = item.get("notesEn", "") or ""
                     # Extract check-in time from notesEn like "CHECK-IN 14:25"
-                    status_time_for_cache = item.get(
-                        "scheduledTime", ""
-                    )  # Default to departure time
+                    # IMPORTANT: Only store if explicit time found. DO NOT default
+                    # to scheduledTime (departure time) - that causes wrong check-in
+                    # times to be cached and displayed.
+                    status_time_for_cache = None
                     checkin_match = re.search(
                         r"CHECK-IN\s+(\d{1,2})[:h](\d{2})", notes_en, re.IGNORECASE
                     )

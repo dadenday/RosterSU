@@ -73,23 +73,24 @@ event = {
     "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
 }
 
+
 # === AUTO-DEPENDENCY INSTALLATION =====================
 # Automatically install missing dependencies on first run
 def _ensure_dependencies():
     """Check and install missing dependencies automatically."""
     missing = []
-    
+
     # Check each required package
     try:
         import fasthtml
     except ImportError:
         missing.append("python-fasthtml")
-    
+
     try:
         import python_calamine
     except ImportError:
         missing.append("python-calamine")
-    
+
     try:
         import rapidfuzz
     except ImportError:
@@ -107,12 +108,22 @@ def _ensure_dependencies():
         print(f"\nMissing dependencies: {', '.join(missing)}")
         print("\nInstalling required packages...")
         print("(This may take a few minutes)\n")
-        
+
         import subprocess
+
         try:
             subprocess.check_call(
-                [sys.executable, "-m", "pip", "install", "--upgrade", "-r", 
-                 os.path.join(os.path.dirname(os.path.abspath(__file__)), "requirements.txt")],
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "--upgrade",
+                    "-r",
+                    os.path.join(
+                        os.path.dirname(os.path.abspath(__file__)), "requirements.txt"
+                    ),
+                ],
                 stdout=sys.stdout,
                 stderr=sys.stderr,
             )
@@ -123,6 +134,7 @@ def _ensure_dependencies():
             print("\nPlease install manually with:")
             print("  pip install -r requirements.txt")
             sys.exit(1)
+
 
 # Run dependency check before importing third-party packages
 _ensure_dependencies()
@@ -650,12 +662,12 @@ def _extract_date_from_filename(filename: str) -> Optional[str]:
     base = os.path.splitext(os.path.basename(filename))[0]
     # Try common patterns: DDMMYYYY, DD.MM.YYYY, DD-MM-YYYY, YYYYMMDD
     for pattern in [
-        r'(\d{2}[.\-/]\d{2}[.\-/]\d{4})',
-        r'(\d{8})',
+        r"(\d{2}[.\-/]\d{2}[.\-/]\d{4})",
+        r"(\d{8})",
     ]:
         m = re.search(pattern, base)
         if m:
-            raw = m.group(1).replace('.', '').replace('-', '').replace('/', '')
+            raw = m.group(1).replace(".", "").replace("-", "").replace("/", "")
             if len(raw) == 8 and raw[:2].isdigit() and raw[2:4].isdigit():
                 # DDMMYYYY -> normalize
                 return f"{raw[:2]}{raw[2:4]}{raw[4:]}"
@@ -676,7 +688,11 @@ def _archive_processed_file(file_path: str, manifest: IngestionManifest) -> str:
     """
     os.makedirs(PROCESSED_ARCHIVE_DIR, exist_ok=True)
 
-    file_date = manifest.global_date if manifest.global_date else _extract_date_from_filename(manifest.filename)
+    file_date = (
+        manifest.global_date
+        if manifest.global_date
+        else _extract_date_from_filename(manifest.filename)
+    )
     if not file_date:
         file_date = "unknown"
 
@@ -684,9 +700,11 @@ def _archive_processed_file(file_path: str, manifest: IngestionManifest) -> str:
     dest_path = os.path.join(PROCESSED_ARCHIVE_DIR, base_name)
 
     # Check for existing file with same date
-    existing_files = glob.glob(os.path.join(PROCESSED_ARCHIVE_DIR, "*.xlsx")) + \
-                     glob.glob(os.path.join(PROCESSED_ARCHIVE_DIR, "*.xls")) + \
-                     glob.glob(os.path.join(PROCESSED_ARCHIVE_DIR, "*.csv"))
+    existing_files = (
+        glob.glob(os.path.join(PROCESSED_ARCHIVE_DIR, "*.xlsx"))
+        + glob.glob(os.path.join(PROCESSED_ARCHIVE_DIR, "*.xls"))
+        + glob.glob(os.path.join(PROCESSED_ARCHIVE_DIR, "*.csv"))
+    )
 
     for existing in existing_files:
         try:
@@ -698,18 +716,24 @@ def _archive_processed_file(file_path: str, manifest: IngestionManifest) -> str:
                 if new_mtime > old_mtime:
                     # Remove old archive, replace with new
                     os.remove(existing)
-                    log_debug("archive_replaced", {
-                        "old": os.path.basename(existing),
-                        "new": base_name,
-                        "date": file_date,
-                    })
+                    log_debug(
+                        "archive_replaced",
+                        {
+                            "old": os.path.basename(existing),
+                            "new": base_name,
+                            "date": file_date,
+                        },
+                    )
                 else:
                     # Old archive is newer, skip replacement
-                    log_debug("archive_skipped", {
-                        "existing": os.path.basename(existing),
-                        "incoming": base_name,
-                        "date": file_date,
-                    })
+                    log_debug(
+                        "archive_skipped",
+                        {
+                            "existing": os.path.basename(existing),
+                            "incoming": base_name,
+                            "date": file_date,
+                        },
+                    )
                     return existing
                 break
         except OSError:
@@ -720,6 +744,7 @@ def _archive_processed_file(file_path: str, manifest: IngestionManifest) -> str:
         os.rename(file_path, dest_path)
     except OSError:
         import shutil
+
         shutil.copy2(file_path, dest_path)
         os.remove(file_path)
 
@@ -832,12 +857,12 @@ class DateResolver:
     # Key principle: weight comes from source TYPE, not from COUNT.
     # A date appearing in 5 sheets is NOT more authoritative than one in the filename.
     WEIGHTS = {
-        "filename": 5,        # Human's declared intent — highest authority
-        "shift_header": 3,    # Sheet header with NGÀY DD.MM.YYYY
-        "shift_cell": 2,      # Date found in shift sheet cells
-        "flight_header": 2,   # Flight sheet header date
-        "flight_cell": 1,     # Date found in flight sheet cells
-        "iso_cell": 3,        # YYYY-MM-DD format cells (explicit dates)
+        "filename": 5,  # Human's declared intent — highest authority
+        "shift_header": 3,  # Sheet header with NGÀY DD.MM.YYYY
+        "shift_cell": 2,  # Date found in shift sheet cells
+        "flight_header": 2,  # Flight sheet header date
+        "flight_cell": 1,  # Date found in flight sheet cells
+        "iso_cell": 3,  # YYYY-MM-DD format cells (explicit dates)
     }
 
     # Anomaly threshold
@@ -1113,6 +1138,7 @@ def wait_for_port(
 ) -> bool:
     """Wait for a TCP port to become active."""
     import socket
+
     debug_log(
         f"wait_for_port called with port={port}, host={host}, timeout={timeout}",
         "NETWORK",
@@ -1136,6 +1162,7 @@ def wait_for_http(
 ) -> bool:
     """Wait for a HTTP response from the port."""
     import http.client
+
     debug_log(
         f"wait_for_http called with port={port}, host={host}, timeout={timeout}",
         "NETWORK",
@@ -1161,6 +1188,7 @@ def wait_for_http(
 def launch_browser(url):
     """Attempt to open URL in browser using Termux commands."""
     import subprocess
+
     debug_log(f"launch_browser called with url={url}", "BROWSER")
     try:
         # Strategy 1: termux-open-url (Requires termux-api)
@@ -1898,6 +1926,7 @@ class IngestionOrchestrator:
         Returns IngestionManifest with all tracking information.
         """
         import openpyxl
+
         filename = os.path.basename(file_path)
         log_debug("ORCH_START", {"file": file_path})
 
@@ -2103,6 +2132,7 @@ def parse_file(file_stream, filename, alias_regex):
     LAYER 4 COMPLIANCE: IngestionManifest tracks all decisions for Safe Write Gate.
     """
     import openpyxl
+
     processed_data = []
     manifest = None
 
@@ -2502,10 +2532,13 @@ def parse_file(file_stream, filename, alias_regex):
 
     except Exception as e:
         # Always return 3 values to match caller expectations
-        log_debug("parse_file_exception", {
-            "file": filename,
-            "error": str(e),
-        })
+        log_debug(
+            "parse_file_exception",
+            {
+                "file": filename,
+                "error": str(e),
+            },
+        )
         return None, str(e), None
 
     # === LAYER 4: CONFIDENCE SCORING ===
@@ -2642,11 +2675,19 @@ def get_config():
 
         # Ensure all operational settings exist (backward compat with old JSON files)
         for op_key in [
-            "port", "history_limit", "page_size", "port_wait_timeout",
-            "ingest_interval", "max_upload_mb",
-            "auto_ingest_dir", "export_dir", "processed_archive_dir",
+            "port",
+            "history_limit",
+            "page_size",
+            "port_wait_timeout",
+            "ingest_interval",
+            "max_upload_mb",
+            "auto_ingest_dir",
+            "export_dir",
+            "processed_archive_dir",
             "db_path",
-            "static_html_scope", "static_html_count", "static_html_output_dir",
+            "static_html_scope",
+            "static_html_count",
+            "static_html_output_dir",
             "enable_flight_sync",
         ]:
             if op_key not in config:
@@ -2695,16 +2736,20 @@ def _run_ingest_once():
     - Manifest-based decision logging
     """
     import concurrent.futures
+
     APP.set_ingest()
     error_occurred = False
     try:
         if not os.path.exists(AUTO_INGEST_DIR):
             # Provide visibility into missing directory
             update_status("Error", f"Folder not found: {AUTO_INGEST_DIR}")
-            log_debug("auto_ingest_dir_missing", {
-                "path": AUTO_INGEST_DIR,
-                "hint": "Run 'termux-setup-storage' and grant storage permission",
-            })
+            log_debug(
+                "auto_ingest_dir_missing",
+                {
+                    "path": AUTO_INGEST_DIR,
+                    "hint": "Run 'termux-setup-storage' and grant storage permission",
+                },
+            )
             error_occurred = True
             return
 
@@ -2723,16 +2768,22 @@ def _run_ingest_once():
                 safe_files.append(f)
             except ValueError as e:
                 dropped_files.append(os.path.basename(f))
-                log_debug("safe_path_rejected", {
-                    "file": os.path.basename(f),
-                    "reason": str(e),
-                })
-        
+                log_debug(
+                    "safe_path_rejected",
+                    {
+                        "file": os.path.basename(f),
+                        "reason": str(e),
+                    },
+                )
+
         if dropped_files:
-            log_debug("safe_path_dropped_files", {
-                "count": len(dropped_files),
-                "files": dropped_files[:5],  # Log first 5
-            })
+            log_debug(
+                "safe_path_dropped_files",
+                {
+                    "count": len(dropped_files),
+                    "files": dropped_files[:5],  # Log first 5
+                },
+            )
 
         if not safe_files:
             update_status("Idle", "Monitoring folder...")
@@ -2756,7 +2807,13 @@ def _run_ingest_once():
                 file_size = os.path.getsize(safe_f_path)
                 max_bytes = MAX_UPLOAD_MB * 1024 * 1024
                 if file_size > max_bytes:
-                    log_debug("file_too_large", {"file": os.path.basename(f_path), "size_mb": file_size / (1024*1024)})
+                    log_debug(
+                        "file_too_large",
+                        {
+                            "file": os.path.basename(f_path),
+                            "size_mb": file_size / (1024 * 1024),
+                        },
+                    )
                     return (f_path, None, f"File too large (>{MAX_UPLOAD_MB}MB)", None)
                 with open(safe_f_path, "rb") as f:
                     # parse_file now returns (results, error, manifest)
@@ -2806,9 +2863,15 @@ def _run_ingest_once():
                     continue
 
                 # Gate: file parsed but produced zero data (all sheets SKIP)
-                if manifest and not manifest.parsed_counts.get("shift") and not manifest.parsed_counts.get("flights"):
+                if (
+                    manifest
+                    and not manifest.parsed_counts.get("shift")
+                    and not manifest.parsed_counts.get("flights")
+                ):
                     manifest.blocked = True
-                    manifest.block_reason = "no_data_extracted: all sheets classified as SKIP"
+                    manifest.block_reason = (
+                        "no_data_extracted: all sheets classified as SKIP"
+                    )
                     quarantine_file(safe_file, manifest)
                     quarantined_count += 1
                     log_debug(
@@ -2852,7 +2915,9 @@ def _run_ingest_once():
                     # No results, no error — file parsed but produced nothing
                     if manifest:
                         manifest.blocked = True
-                        manifest.block_reason = "no_data_extracted: parsed but empty result"
+                        manifest.block_reason = (
+                            "no_data_extracted: parsed but empty result"
+                        )
                         quarantine_file(safe_file, manifest)
                         quarantined_count += 1
                     elif os.path.exists(safe_file):
@@ -2898,19 +2963,6 @@ def run_auto_ingest():
         finally:
             APP.clear_ingest()
             bump_db_rev()
-            # Generate static HTML viewer
-            try:
-                from export import generate_html as gen_static_html
-                config = get_config()
-                scope = config.get("static_html_scope", "current_month")
-                count = config.get("static_html_count", 5)
-                result = gen_static_html(scope=scope, count=count)
-                if result["success"]:
-                    log_debug("static_html_generated", {"path": result["file_path"], "count": result["entry_count"]})
-                else:
-                    log_debug("static_html_error", {"error": result["error"]})
-            except Exception as e:
-                log_debug("static_html_error", str(e))
 
         time.sleep(INGEST_INTERVAL)
 
@@ -3473,7 +3525,7 @@ if __name__ in {"__main__", "builtins"}:
     def _run_flight_startup_sync():
         """Refresh API preview cache at startup if flight sync is enabled.
 
-        Runs in a background thread so the API timeout doesn't block app startup.
+        Runs synchronously so static HTML can be generated with complete API data.
         Gated by enable_flight_sync config.
         """
         try:
@@ -3482,15 +3534,30 @@ if __name__ in {"__main__", "builtins"}:
                 debug_log("Flight sync: disabled in config, skipping API cache refresh")
                 return
 
-            def _refresh_api_preview_cache():
-                try:
-                    import routes
-                    routes._refresh_api_cache(days=3)
-                    debug_log("Flight API preview cache: refreshed (today + 2 days)")
-                except Exception as e:
-                    debug_log(f"Flight API preview cache startup refresh error: {e}")
+            # Refresh API cache synchronously (don't block startup with timeout)
+            import routes
 
-            threading.Thread(target=_refresh_api_preview_cache, daemon=True).start()
+            routes._refresh_api_cache(days=3)
+            debug_log("Flight API preview cache: refreshed (today + 2 days)")
+
+            # Generate static HTML with fresh API data
+            try:
+                from export import generate_html as gen_static_html
+
+                scope = merged.get("static_html_scope", "current_month")
+                count = merged.get("static_html_count", 5)
+                result = gen_static_html(
+                    scope=scope, count=count, api_cache=routes._flight_api_cache
+                )
+                if result["success"]:
+                    debug_log(
+                        "static_html_generated_at_startup",
+                        {"path": result["file_path"], "count": result["entry_count"]},
+                    )
+                else:
+                    debug_log("static_html_error", {"error": result["error"]})
+            except Exception as e:
+                debug_log("static_html_error", str(e))
 
         except Exception as e:
             debug_log(f"Flight sync startup error: {e}")

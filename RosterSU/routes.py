@@ -44,7 +44,12 @@ from state import (
     bump_db_rev,
     SHUTDOWN_EVENT,
 )
-from database import get_available_months, clear_db, delete_entries, format_corp_month_display
+from database import (
+    get_available_months,
+    clear_db,
+    delete_entries,
+    format_corp_month_display,
+)
 from export import generate_ical_content, generate_csv_content
 from components import (
     format_date_vn,
@@ -69,7 +74,7 @@ _flight_api_cache_lock = threading.Lock()
 
 def _refresh_api_cache(days=3):
     """Fetch API data for today + N future days and store in cache.
-    
+
     Uses status_cache.json as fallback when API is unavailable.
     Merges cached status times with API data for display in preview card.
     """
@@ -94,12 +99,15 @@ def _refresh_api_cache(days=3):
                 "error_message": None,
             }
             cached_count = sum(1 for _, c in scraped_with_cache if c)
-            debug_log(f"Flight API cache: {len(scraped_with_cache)} flights for {date_db} ({cached_count} from status cache)")
+            debug_log(
+                f"Flight API cache: {len(scraped_with_cache)} flights for {date_db} ({cached_count} from status cache)"
+            )
         except Exception as e:
             # Fallback: load from disk cache even when API is down
             try:
                 from status_cache import get_flights_for_date
                 from scraper import ScrapedFlight
+
                 cached_flights = get_flights_for_date(date_iso)
                 fallback = []
                 for cf in cached_flights:
@@ -120,7 +128,9 @@ def _refresh_api_cache(days=3):
                     "error": len(fallback) == 0,
                     "error_message": f"API unavailable: {e}" if not fallback else None,
                 }
-                debug_log(f"Flight API fallback cache: {len(fallback)} flights for {date_db}")
+                debug_log(
+                    f"Flight API fallback cache: {len(fallback)} flights for {date_db}"
+                )
             except Exception as e2:
                 dates_data[date_db] = {
                     "fetched_at": datetime.now().isoformat(),
@@ -206,7 +216,8 @@ def get():
     # Build options with "All" first, then mark default month as selected
     all_opt = Option("Tất cả tháng", value="All")
     month_opts = [all_opt] + [
-        Option(format_corp_month_display(m), value=m, selected=(m == default_month)) for m in months
+        Option(format_corp_month_display(m), value=m, selected=(m == default_month))
+        for m in months
     ]
 
     # Initial RosterList with default month filter
@@ -273,7 +284,7 @@ def get():
         # Auto-refresh API preview card once after page load (gated by flight sync config)
         Script(f"""
         document.addEventListener('DOMContentLoaded', function() {{
-            const FLIGHT_SYNC_ENABLED = {'true' if flight_sync_enabled else 'false'};
+            const FLIGHT_SYNC_ENABLED = {"true" if flight_sync_enabled else "false"};
             if (!FLIGHT_SYNC_ENABLED) return;
             // Wait a short delay to let the initial render complete,
             // then trigger the API preview refresh
@@ -439,84 +450,101 @@ def check_version():
     # Get local version
     local_version = "unknown"
     if os.path.exists(version_file):
-        with open(version_file, 'r') as f:
+        with open(version_file, "r") as f:
             local_version = f.read().strip()
-    
+
     # Try to get remote version
     remote_version = "unknown"
     has_update = False
     changes = []
     error_msg = None
-    
+
     try:
         # Fetch latest changes
         subprocess.run(
             ["git", "fetch", "origin"],
             cwd=PROJECT_ROOT,
             capture_output=True,
-            timeout=10
+            timeout=10,
         )
-        
+
         # Get current branch
         branch_result = subprocess.run(
-            ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
-            timeout=5
+            timeout=5,
         )
         current_branch = branch_result.stdout.strip()
-        
+
         # Get remote version
         result = subprocess.run(
             ["git", "show", f"origin/{current_branch}:VERSION"],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
-            timeout=5
+            timeout=5,
         )
-        
+
         if result.returncode == 0:
             remote_version = result.stdout.strip()
             has_update = local_version != remote_version
-        
+
         # Get recent changes if there's an update
         if has_update:
             log_result = subprocess.run(
-                ["git", "log", f"HEAD..origin/{current_branch}", "--oneline", "--no-merges", "--pretty=format:%s"],
+                [
+                    "git",
+                    "log",
+                    f"HEAD..origin/{current_branch}",
+                    "--oneline",
+                    "--no-merges",
+                    "--pretty=format:%s",
+                ],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
-                timeout=5
+                timeout=5,
             )
             if log_result.returncode == 0:
-                changes = [line.strip() for line in log_result.stdout.strip().split('\n') if line.strip()][:10]
-    
+                changes = [
+                    line.strip()
+                    for line in log_result.stdout.strip().split("\n")
+                    if line.strip()
+                ][:10]
+
     except subprocess.TimeoutExpired:
         error_msg = "Timeout checking for updates"
     except Exception as e:
         error_msg = str(e)
-    
+
     # Build HTML response
     if error_msg:
         return Div(
             P(f"⚠️ {error_msg}", style="color:#ef4444;"),
-            style="padding:0.5rem; background:#1e293b; border-radius:5px;"
+            style="padding:0.5rem; background:#1e293b; border-radius:5px;",
         )
-    
+
     if not has_update:
         return Div(
             P("✅ Bạn đang sử dụng phiên bản mới nhất!", style="color:#22c55e;"),
-            P(f"Phiên bản: {local_version}", style="font-size:0.8rem; color:var(--muted);"),
-            style="padding:0.5rem; background:#1e293b; border-radius:5px;"
+            P(
+                f"Phiên bản: {local_version}",
+                style="font-size:0.8rem; color:var(--muted);",
+            ),
+            style="padding:0.5rem; background:#1e293b; border-radius:5px;",
         )
-    
+
     # Has update - show details with Update Now button
     changes_html = ""
     if changes:
         changes_html = Div(
             P("📝 Các thay đổi:", style="font-weight:500; margin-bottom:0.3rem;"),
-            *[P(f"• {change}", style="font-size:0.8rem; margin:0.2rem 0;") for change in changes],
+            *[
+                P(f"• {change}", style="font-size:0.8rem; margin:0.2rem 0;")
+                for change in changes
+            ],
             style="margin:0.5rem 0;",
         )
 
@@ -540,12 +568,18 @@ def check_version():
     return Div(
         Div(
             P("🎉 Có bản cập nhật mới!", style="color:#fbbf24; font-weight:600;"),
-            P(f"Hiện tại: {local_version} → Mới nhất: {remote_version}", style="margin:0.3rem 0;"),
+            P(
+                f"Hiện tại: {local_version} → Mới nhất: {remote_version}",
+                style="margin:0.3rem 0;",
+            ),
             changes_html,
             update_button_html,
             P(
                 "💡 Hoặc chạy lệnh sau trong terminal: ",
-                Code("./update.sh", style="background:#0f172a; padding:0.2rem 0.4rem; border-radius:3px;"),
+                Code(
+                    "./update.sh",
+                    style="background:#0f172a; padding:0.2rem 0.4rem; border-radius:3px;",
+                ),
                 style="font-size:0.75rem; color:var(--muted); margin-top:0.5rem;",
             ),
             style="padding:0.5rem; background:#1e293b; border-radius:5px; border-left:3px solid #fbbf24;",
@@ -563,7 +597,7 @@ def run_update():
     if not os.path.exists(update_script):
         return Div(
             P("❌ Không tìm thấy tệp update.sh", style="color:#ef4444;"),
-            style="padding:0.5rem; background:#1e293b; border-radius:5px;"
+            style="padding:0.5rem; background:#1e293b; border-radius:5px;",
         )
 
     if not os.access(update_script, os.X_OK):
@@ -571,8 +605,11 @@ def run_update():
             os.chmod(update_script, 0o755)
         except Exception:
             return Div(
-                P("❌ Không thể cấp quyền thực thi cho update.sh", style="color:#ef4444;"),
-                style="padding:0.5rem; background:#1e293b; border-radius:5px;"
+                P(
+                    "❌ Không thể cấp quyền thực thi cho update.sh",
+                    style="color:#ef4444;",
+                ),
+                style="padding:0.5rem; background:#1e293b; border-radius:5px;",
             )
 
     # Run update.sh non-interactively (auto-yes to prompts)
@@ -602,8 +639,14 @@ def run_update():
                 P(f"Phiên bản mới: {new_version}", style="margin:0.3rem 0;"),
                 Div(
                     P("📋 Chi tiết:", style="font-weight:500; margin-bottom:0.3rem;"),
-                    *[P(line, style="font-size:0.75rem; margin:0.1rem 0; color:var(--muted);")
-                      for line in output_lines[-10:] if line.strip()],
+                    *[
+                        P(
+                            line,
+                            style="font-size:0.75rem; margin:0.1rem 0; color:var(--muted);",
+                        )
+                        for line in output_lines[-10:]
+                        if line.strip()
+                    ],
                     style="margin:0.5rem 0;",
                 ),
                 P(
@@ -617,13 +660,22 @@ def run_update():
                 P("❌ Cập nhật thất bại!", style="color:#ef4444; font-weight:600;"),
                 Div(
                     P("📋 Lỗi:", style="font-weight:500; margin-bottom:0.3rem;"),
-                    *[P(line, style="font-size:0.75rem; margin:0.1rem 0; color:#ef4444;")
-                      for line in error_lines[-5:] if line.strip()],
+                    *[
+                        P(
+                            line,
+                            style="font-size:0.75rem; margin:0.1rem 0; color:#ef4444;",
+                        )
+                        for line in error_lines[-5:]
+                        if line.strip()
+                    ],
                     style="margin:0.5rem 0;",
                 ),
                 P(
                     "💡 Thử cập nhật thủ công: ",
-                    Code("./update.sh", style="background:#0f172a; padding:0.2rem 0.4rem; border-radius:3px;"),
+                    Code(
+                        "./update.sh",
+                        style="background:#0f172a; padding:0.2rem 0.4rem; border-radius:3px;",
+                    ),
                     style="font-size:0.75rem; color:var(--muted); margin-top:0.5rem;",
                 ),
                 style="padding:0.75rem; background:#1e293b; border-radius:5px; border-left:3px solid #ef4444;",
@@ -631,13 +683,16 @@ def run_update():
 
     except subprocess.TimeoutExpired:
         return Div(
-            P("⏰ Cập nhật hết thời gian (120s). Vui lòng chạy thủ công.", style="color:#fbbf24;"),
-            style="padding:0.5rem; background:#1e293b; border-radius:5px;"
+            P(
+                "⏰ Cập nhật hết thời gian (120s). Vui lòng chạy thủ công.",
+                style="color:#fbbf24;",
+            ),
+            style="padding:0.5rem; background:#1e293b; border-radius:5px;",
         )
     except Exception as e:
         return Div(
             P(f"❌ Lỗi: {html.escape(str(e))}", style="color:#ef4444;"),
-            style="padding:0.5rem; background:#1e293b; border-radius:5px;"
+            style="padding:0.5rem; background:#1e293b; border-radius:5px;",
         )
 
 
@@ -795,7 +850,10 @@ def settings_page(
                 ),
                 P(
                     "💡 Hoặc chạy lệnh sau trong terminal: ",
-                    Code("./update.sh", style="background:#1e293b; padding:0.2rem 0.4rem; border-radius:3px;"),
+                    Code(
+                        "./update.sh",
+                        style="background:#1e293b; padding:0.2rem 0.4rem; border-radius:3px;",
+                    ),
                     style="font-size:0.75rem; color:var(--muted); margin-top:0.5rem;",
                 ),
                 cls="card mb-3",
@@ -1068,7 +1126,9 @@ def settings_page(
                 ),
                 # Radio buttons for On/Off
                 Div(
-                    Label("Trạng thái:", style="font-weight:500; margin-bottom:0.3rem;"),
+                    Label(
+                        "Trạng thái:", style="font-weight:500; margin-bottom:0.3rem;"
+                    ),
                     Div(
                         Input(
                             type="radio",
@@ -1077,7 +1137,9 @@ def settings_page(
                             value="1",
                             **({"checked": ""} if flight_sync_scope else {}),
                         ),
-                        Label("Bật", for_="flight-sync-on", style="margin-right:0.75rem;"),
+                        Label(
+                            "Bật", for_="flight-sync-on", style="margin-right:0.75rem;"
+                        ),
                         Input(
                             type="radio",
                             id="flight-sync-off",
@@ -1085,7 +1147,9 @@ def settings_page(
                             value="0",
                             **({"checked": ""} if not flight_sync_scope else {}),
                         ),
-                        Label("Tắt", for_="flight-sync-off", style="margin-right:0.75rem;"),
+                        Label(
+                            "Tắt", for_="flight-sync-off", style="margin-right:0.75rem;"
+                        ),
                         style="display:flex; align-items:center; gap:0.5rem; font-size:0.8rem;",
                     ),
                     style="margin-bottom:0.5rem;",
@@ -1237,6 +1301,30 @@ def post_flight_fetch():
     bump_db_rev()
     with _flight_api_cache_lock:
         cache_copy = dict(_flight_api_cache)
+
+    # Regenerate static HTML with fresh API ckrow data
+    try:
+        import export as export_mod
+        from config import _load_merged_config
+
+        # Ensure export module is initialized (it should be from app startup)
+        if export_mod._load_history is None:
+            # Fallback: re-init with load_history from this module's database access
+            from database import load_history
+
+            export_mod._init_exports(load_history, lambda x: x, debug_log)
+
+        config = _load_merged_config()
+        scope = config.get("static_html_scope", "current_month")
+        count = config.get("static_html_count", 5)
+        result = export_mod.generate_html(
+            scope=scope, count=count, api_cache=cache_copy
+        )
+        if result.get("success"):
+            debug_log("static_html_regenerated_from_api", {"path": result["file_path"]})
+    except Exception as e:
+        debug_log("static_html_regenerate_error", {"error": str(e)})
+
     return ApiPreviewCard(cache=cache_copy)
 
 

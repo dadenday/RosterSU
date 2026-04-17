@@ -14,7 +14,9 @@ from datetime import datetime, timedelta
 from config import RE_TIME
 import os
 from config import (
-    STATIC_HTML_OUTPUT_DIR, STATIC_HTML_FILENAME, STATIC_HTML_META_FILENAME
+    STATIC_HTML_OUTPUT_DIR,
+    STATIC_HTML_FILENAME,
+    STATIC_HTML_META_FILENAME,
 )
 
 # Import from main module (requires lazy loading to avoid circular imports)
@@ -35,11 +37,11 @@ def _init_exports(load_history_fn, sanitize_fn, debug_log_fn=None) -> None:
 def export_snapshot(scope="current_month", count=5):
     """
     Query DB and return roster data for static HTML generation.
-    
+
     Args:
         scope: "all", "current_month", "latest", or "latest_n"
         count: Number of entries for "latest_n" mode
-    
+
     Returns:
         list of dict rows from work_schedule table
     """
@@ -52,6 +54,7 @@ def export_snapshot(scope="current_month", count=5):
     elif scope == "current_month":
         # Use corporation month (26th to 25th)
         from database import date_to_corp_month
+
         now = datetime.now()
         month_str = date_to_corp_month(now.strftime("%Y-%m-%d"))
         return _load_history(limit=9999, filter_month=month_str)
@@ -62,6 +65,7 @@ def export_snapshot(scope="current_month", count=5):
     else:
         # Fallback to current corporation month
         from database import date_to_corp_month
+
         now = datetime.now()
         month_str = date_to_corp_month(now.strftime("%Y-%m-%d"))
         return _load_history(limit=9999, filter_month=month_str)
@@ -97,7 +101,7 @@ def _render_frozen_card(row):
     # Format shift with zone extraction
     zone = ""
     time_part = shift_raw or "--"
-    zone_match = re.search(r'(.*)\((.*)\)', time_part)
+    zone_match = re.search(r"(.*)\((.*)\)", time_part)
     if zone_match:
         time_part = zone_match.group(1).strip()
         zone = zone_match.group(2).strip().capitalize()
@@ -121,7 +125,7 @@ def _render_frozen_card(row):
         color_class = "rc-nil"
 
     # Build card HTML
-    card_html = f'''
+    card_html = f"""
     <details class="rd" {"open" if flights else ""}>
         <summary>
             <div class="rc {color_class}">
@@ -130,20 +134,22 @@ def _render_frozen_card(row):
                         <p class="rc-date">{html_mod.escape(shift_display, quote=True)}</p>
                     </div>
                 </div>
-    '''
+    """
 
     if flights:
-        card_html += f'                <span class="rc-badge">{len(flights)} chuyến</span>\n'
+        card_html += (
+            f'                <span class="rc-badge">{len(flights)} chuyến</span>\n'
+        )
 
-    card_html += '''            </div>
-        </summary>'''
+    card_html += """            </div>
+        </summary>"""
 
     # Flight table
     if flights:
         # Sort flights by Open time (same logic as components.py)
         def _sort_flight_key(f):
             open_t = f.get("Open", "")
-            time_match = re.search(r'(\d{1,2}[:hH]\d{2})', open_t)
+            time_match = re.search(r"(\d{1,2}[:hH]\d{2})", open_t)
             if time_match:
                 t = time_match.group(1).replace("h", ":").replace(".", ":")
                 parts = t.split(":")
@@ -165,7 +171,7 @@ def _render_frozen_card(row):
                 return "flight-boeing"
             return "flight-other"
 
-        card_html += '''
+        card_html += """
         <div class="fd">
             <table>
                 <thead>
@@ -181,14 +187,14 @@ def _render_frozen_card(row):
                     </tr>
                 </thead>
                 <tbody>
-        '''
+        """
 
         for f in sorted_flights:
             ftype = f.get("Type", "")
             type_class = _get_flight_type_class(ftype)
             row_class = f' class="{type_class}"' if type_class else ""
 
-            card_html += f'''
+            card_html += f"""
                     <tr{row_class}>
                         <td>{html_mod.escape(f.get("Open", ""), quote=True)}</td>
                         <td>{html_mod.escape(f.get("Close", ""), quote=True)}</td>
@@ -199,24 +205,78 @@ def _render_frozen_card(row):
                         <td>{html_mod.escape(f.get("Names", ""), quote=True)}</td>
                         <td>{html_mod.escape(f.get("ckRow", ""), quote=True)}</td>
                     </tr>
-            '''
+            """
 
-        card_html += '''
+        card_html += """
                 </tbody>
             </table>
-        </div>'''
+        </div>"""
 
-    card_html += '\n    </details>'
+    card_html += "\n    </details>"
     return card_html
 
 
-def generate_html(scope="current_month", count=5):
+def _merge_api_ckrow(rows, api_cache):
+    """Merge API ckrow data into snapshot rows.
+
+    Args:
+        rows: List of rows from export_snapshot (dict with work_date, full_data)
+        api_cache: _flight_api_cache dict from routes
+
+    Returns:
+        Modified rows with ckRow updated from API where available
+    """
+    if not api_cache or not rows:
+        return rows
+
+    dates_data = api_cache.get("dates", {})
+    if not dates_data:
+        return rows
+
+    # Build API ckrow lookup: {(date_db, call): ck_row}
+    api_ckrow = {}
+    for date_db, day_data in dates_data.items():
+        if day_data.get("error") or not day_data.get("flights"):
+            continue
+        for flight_entry in day_data["flights"]:
+            if isinstance(flight_entry, tuple) and len(flight_entry) == 2:
+                scraped, cached = flight_entry
+            else:
+                scraped = flight_entry
+                cached = None
+            call = scraped.flight_no.strip().upper()
+            ck_row = scraped.ck_row or (cached.get("ck_row") if cached else None)
+            if call and ck_row:
+                api_ckrow[(date_db, call)] = ck_row
+
+    # Merge into rows
+    import copy
+
+    merged_rows = []
+    for row in rows:
+        row_copy = copy.deepcopy(row)
+        date_db = row["work_date"]
+        full_data = json.loads(row["full_data"])
+        flights = full_data.get("flights", [])
+        for f in flights:
+            call = f.get("Call", "").strip().upper()
+            key = (date_db, call)
+            if key in api_ckrow:
+                f["ckRow"] = api_ckrow[key]
+        row_copy["full_data"] = json.dumps(full_data, ensure_ascii=False)
+        merged_rows.append(row_copy)
+
+    return merged_rows
+
+
+def generate_html(scope="current_month", count=5, api_cache=None):
     """
     Generate frozen HTML viewer file and metadata JSON.
 
     Args:
         scope: "all", "current_month", "latest", or "latest_n"
         count: Number of entries for "latest_n" mode
+        api_cache: Optional _flight_api_cache dict to merge ckrow from API
 
     Returns:
         dict with keys "success", "file_path", "entry_count", "error"
@@ -225,6 +285,10 @@ def generate_html(scope="current_month", count=5):
         # Get snapshot data
         rows = export_snapshot(scope=scope, count=count)
 
+        # Merge API ckrow if cache provided
+        if api_cache and rows:
+            rows = _merge_api_ckrow(rows, api_cache)
+
         if not rows:
             # Write minimal "no data" HTML
             html_content = _build_empty_html()
@@ -232,7 +296,7 @@ def generate_html(scope="current_month", count=5):
                 "generated_at": datetime.now().isoformat(),
                 "scope": scope,
                 "entry_count": 0,
-                "status": "empty"
+                "status": "empty",
             }
         else:
             # Build cards
@@ -241,24 +305,28 @@ def generate_html(scope="current_month", count=5):
             # Date range for title
             first_date = rows[-1]["work_date"] if rows else ""
             last_date = rows[0]["work_date"] if rows else ""
-            date_range = f"{first_date} → {last_date}" if first_date != last_date else first_date
+            date_range = (
+                f"{first_date} → {last_date}" if first_date != last_date else first_date
+            )
 
             scope_labels = {
                 "all": "Tất cả",
                 "current_month": "Tháng này",
                 "latest": "Mới nhất",
-                "latest_n": f"{count} mới nhất"
+                "latest_n": f"{count} mới nhất",
             }
             scope_label = scope_labels.get(scope, scope)
 
-            html_content = _build_full_html(cards_html, date_range, scope_label, len(rows))
+            html_content = _build_full_html(
+                cards_html, date_range, scope_label, len(rows)
+            )
             meta = {
                 "generated_at": datetime.now().isoformat(),
                 "scope": scope,
                 "scope_label": scope_label,
                 "entry_count": len(rows),
                 "date_range": date_range,
-                "status": "ok"
+                "status": "ok",
             }
 
         # Write files
@@ -280,20 +348,15 @@ def generate_html(scope="current_month", count=5):
             "success": True,
             "file_path": html_path,
             "entry_count": meta["entry_count"],
-            "error": None
+            "error": None,
         }
     except Exception as e:
-        return {
-            "success": False,
-            "file_path": None,
-            "entry_count": 0,
-            "error": str(e)
-        }
+        return {"success": False, "file_path": None, "entry_count": 0, "error": str(e)}
 
 
 def _build_full_html(cards_html, date_range, scope_label, count):
     """Build the complete HTML document with inline CSS."""
-    return f'''<!DOCTYPE html>
+    return f"""<!DOCTYPE html>
 <html lang="vi">
 <head>
     <meta charset="utf-8">
@@ -458,12 +521,12 @@ summary::marker {{ content: '' !important; }}
 }})();
     </script>
 </body>
-</html>'''
+</html>"""
 
 
 def _build_empty_html():
     """Build minimal HTML for empty state."""
-    return '''<!DOCTYPE html>
+    return """<!DOCTYPE html>
 <html lang="vi">
 <head>
     <meta charset="utf-8">
@@ -486,7 +549,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #
         <p style="font-size:0.8rem; color:#64748b; margin-top:0.5rem;">Hãy tải lên file xếp lịch để xem tại đây.</p>
     </div>
 </body>
-</html>'''
+</html>"""
 
 
 def generate_ical_content():

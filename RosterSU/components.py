@@ -775,35 +775,84 @@ def ApiPreviewCard(cache: dict, days: int = 3) -> Div:
         if not day_data.get("flights"):
             continue
 
-        # Match with DB
+        # Build API flights lookup for ALL days (needed for overnight flight matching)
+        # Key: flight call sign, Value: list of (scraped, cached, date_iso)
+        api_by_call_all_days = {}
+        for di in range(days):
+            d_obj = datetime.now() + timedelta(days=di)
+            d_db = d_obj.strftime("%d.%m.%Y")
+            d_iso = d_obj.strftime("%Y-%m-%d")
+
+            if d_db not in dates_data:
+                continue
+            d_data = dates_data[d_db]
+            if d_data.get("error") or not d_data.get("flights"):
+                continue
+
+            for flight_entry in d_data["flights"]:
+                if isinstance(flight_entry, tuple) and len(flight_entry) == 2:
+                    scraped, cached = flight_entry
+                else:
+                    scraped = flight_entry
+                    cached = None
+
+                call = scraped.flight_no.strip().upper()
+                if call:
+                    if call not in api_by_call_all_days:
+                        api_by_call_all_days[call] = []
+                    api_by_call_all_days[call].append((scraped, cached, d_iso))
+
+        # Match with DB - for overnight flights, prefer next day's API data
         db_flights = _load_db_flights_for_date(date_db)
 
         # Skip if no DB schedule
         if not db_flights:
             continue
 
-        # Build matched flights
-        db_by_call = {}
-        for f in db_flights:
-            call = f.get("Call", "").strip().upper()
-            if call:
-                db_by_call[call] = f
-
         matched = []
-        flights_data = day_data["flights"]
+        for db_flight in db_flights:
+            call = db_flight.get("Call", "").strip().upper()
+            if not call or call not in api_by_call_all_days:
+                continue
 
-        for flight_entry in flights_data:
-            # Handle new tuple format: (ScrapedFlight, cached_data_or_None)
-            if isinstance(flight_entry, tuple) and len(flight_entry) == 2:
-                scraped, cached = flight_entry
-            else:
-                # Original format: just ScrapedFlight
-                scraped = flight_entry
-                cached = None
+            # Get all API entries for this flight across days
+            api_entries = api_by_call_all_days[call]
 
-            call = scraped.flight_no.strip().upper()
-            if call in db_by_call:
-                matched.append((db_by_call[call], scraped, cached))
+            # Find best match: prefer same-day, but for overnight flights use next day
+            best_entry = None
+            for scraped, cached, d_iso in api_entries:
+                # Check if this API entry is for an overnight flight (departs early morning)
+                sched_time = scraped.scheduled_time or ""
+                is_overnight_departure = sched_time.isdigit() and int(sched_time) <= 600
+
+                # For the current DB date, check if this API date is the right one
+                current_d_iso = (
+                    datetime.now().strftime("%Y-%m-%d")
+                    if i == 0
+                    else (datetime.now() + timedelta(days=i)).strftime("%Y-%m-%d")
+                )
+
+                if is_overnight_departure:
+                    # Overnight flight: use NEXT day's API data for correct status
+                    next_d = datetime.strptime(current_d_iso, "%Y-%m-%d") + timedelta(
+                        days=1
+                    )
+                    next_d_iso = next_d.strftime("%Y-%m-%d")
+                    if d_iso == next_d_iso:
+                        best_entry = (scraped, cached)
+                        break
+                else:
+                    # Normal flight: use same day's API data
+                    if d_iso == current_d_iso:
+                        best_entry = (scraped, cached)
+                        break
+
+            # Fallback: use first available match
+            if not best_entry and api_entries:
+                best_entry = (api_entries[0][0], api_entries[0][1])
+
+            if best_entry:
+                matched.append((db_flight, best_entry[0], best_entry[1]))
 
         if i == 0:  # Today - filter past
             future_flights = []
@@ -885,11 +934,19 @@ def ApiPreviewCard(cache: dict, days: int = 3) -> Div:
                 close = db_close_raw
 
             # Status: show notesVn value, fallback to regular status
+            api_status = notes_vn or (
+                cached.get("status", "")
+                if cached
+                else (scraped.status or db_flight.get("Status", ""))
+            )
+
+            # Status: show notesVn value, fallback to regular status
             status = notes_vn or (
                 cached.get("status", "")
                 if cached
                 else (scraped.status or db_flight.get("Status", ""))
             )
+
             # Break status text into compact lines for the rowspan=2 cell
             status_lines = _compact_status_lines(status)
             names = db_flight.get("Names", "")
@@ -917,7 +974,7 @@ def ApiPreviewCard(cache: dict, days: int = 3) -> Div:
 
             row1 = Tr(
                 Td(Span(call), cache_badge),
-                Td(api_open_formatted if api_open else "--"),
+                Td(api_open_formatted if api_open_formatted else "--"),
                 Td(status_lines, rowspan="2"),
                 Td(names),
                 Td(flight_type),
