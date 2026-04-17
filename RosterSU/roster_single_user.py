@@ -3525,7 +3525,7 @@ if __name__ in {"__main__", "builtins"}:
     def _run_flight_startup_sync():
         """Refresh API preview cache at startup if flight sync is enabled.
 
-        Runs synchronously so static HTML can be generated with complete API data.
+        Runs in background thread so it doesn't block server startup.
         Gated by enable_flight_sync config.
         """
         try:
@@ -3534,7 +3534,7 @@ if __name__ in {"__main__", "builtins"}:
                 debug_log("Flight sync: disabled in config, skipping API cache refresh")
                 return
 
-            # Refresh API cache synchronously (don't block startup with timeout)
+            # Refresh API cache in background (don't block startup)
             import routes
 
             routes._refresh_api_cache(days=3)
@@ -3563,7 +3563,7 @@ if __name__ in {"__main__", "builtins"}:
             debug_log(f"Flight sync startup error: {e}")
             # Do NOT crash -- app continues without sync
 
-    _run_flight_startup_sync()
+    threading.Thread(target=_run_flight_startup_sync, daemon=True).start()
 
     os.makedirs(PROCESSED_ARCHIVE_DIR, exist_ok=True)
     threading.Thread(target=run_auto_ingest, daemon=True).start()
